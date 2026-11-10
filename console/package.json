@@ -1,0 +1,57 @@
+{
+  "name": "oas-studio",
+  "productName": "OAS Studio",
+  "version": "1.0.0",
+  "description": "阴阳师自动化控制台 · 多实例管理与任务编排（引擎解耦版）",
+  "main": "main.js",
+  "author": "OAS Studio",
+  "license": "GPL-3.0",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "bot.oas.studio",
+    "productName": "OAS Studio",
+    "copyright": "OAS Studio · GPL-3.0 · based on runhey/OAS",
+    "directories": {
+      "output": "../dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../engine",
+        "to": "engine",
+        "filter": ["**/*", "!log/**", "!.cache/**", "!tests/**", "!__pycache__/**"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "OAS-Studio-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OAS Studio",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

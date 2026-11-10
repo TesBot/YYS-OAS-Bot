@@ -1,0 +1,10 @@
+{
+  "name": "OAS Engine",
+  "version": "1.0.0",
+  "entry": "gui/bridge.py",
+  "bridge_port": 22390,
+  "python": "3.10",
+  "requirements": "requirements.txt",
+  "setup": "setup_engine.bat",
+  "description": "阴阳师自动化引擎：任务执行、图像/OCR 服务、桥接 API。由 OAS Studio 控制台调用。"
+}

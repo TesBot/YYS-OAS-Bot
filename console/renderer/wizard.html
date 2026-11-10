@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>OAS Studio · 初始配置</title>
+<style>
+  :root {
+    --bg: #f7f5f1; --panel: #ffffff; --line: #e7e1d8; --text: #24211d;
+    --text-2: #57514a; --text-3: #857d71; --accent: #b8491f;
+    --accent-2: #993a16; --accent-soft: rgba(184, 73, 31, 0.10);
+    --ok: #2e7a52; --err: #b02a30;
+    --ok-soft: rgba(46, 122, 82, 0.10); --err-soft: rgba(176, 42, 48, 0.10);
+    --radius: 10px; --sans: -apple-system, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 30px 38px 26px; background: var(--bg); color: var(--text);
+    font-family: var(--sans); font-size: 14px; line-height: 1.6; overflow-y: auto;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+  .logo .mark {
+    width: 34px; height: 34px; border-radius: 9px; background: var(--accent);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px;
+  }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--text-3); font-size: 12.5px; margin: 2px 0 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .card h2 { font-size: 13.5px; margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+  .card p { margin: 4px 0; color: var(--text-2); font-size: 13px; }
+  .badge { font-size: 11.5px; padding: 1px 9px; border-radius: 99px; font-weight: 600; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.bad { background: var(--err-soft); color: var(--err); }
+  .badge.dim { background: #f2eee7; color: var(--text-3); }
+  code {
+    font-family: Consolas, monospace; background: #f2eee7; border-radius: 4px;
+    padding: 1px 5px; font-size: 12px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  button {
+    font-family: var(--sans); font-size: 13px; border-radius: 8px; cursor: pointer;
+    padding: 8px 15px; border: 1px solid transparent;
+  }
+  .primary { background: var(--accent); color: #fff; }
+  .primary:hover { background: var(--accent-2); }
+  .primary:disabled { background: #c9bfb2; cursor: not-allowed; }
+  .ghost { background: transparent; color: var(--text-2); border-color: var(--line); }
+  input.url {
+    flex: 1; min-width: 260px; font-family: Consolas, monospace; font-size: 12px;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+    color: var(--text-2);
+  }
+  .bar { height: 8px; border-radius: 99px; background: #efe9df; margin-top: 10px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width .2s; }
+  .msg { font-size: 12.5px; margin-top: 8px; color: var(--text-3); }
+  .msg.err { color: var(--err); }
+  .msg.ok { color: var(--ok); }
+  .actions { margin-top: 16px; }
+  .hint { color: var(--text-3); font-size: 12px; margin-top: 14px; }
+</style>
+</head>
+<body>
+  <div class="logo"><div class="mark">OAS</div><h1>OAS Studio · 初始配置</h1></div>
+  <div class="sub">安装包自带引擎；Python 运行时（约 350 MB）独立下载、只装一次，之后更新无需重复下载。</div>
+
+  <div class="card" id="runtimeCard">
+    <h2>① Python 运行时 <span class="badge" id="rtBadge">检查中…</span></h2>
+    <p id="rtDesc">引擎执行任务所需的 Python 环境与依赖库。</p>
+    <div class="row" id="rtActions" hidden>
+      <input class="url" id="rtUrl" placeholder="运行时下载地址（可换成镜像）" />
+      <button class="primary" id="rtDownload">自动下载并安装</button>
+      <button class="ghost" id="rtZipBtn">从本地 zip 安装</button>
+    </div>
+    <div class="bar" id="rtBar" hidden><div id="rtBarFill"></div></div>
+    <div class="msg" id="rtMsg" hidden></div>
+  </div>
+
+  <div class="card" id="engineCard">
+    <h2>② 引擎 <span class="badge" id="enBadge">检查中…</span></h2>
+    <p id="enDesc">安装包已内置引擎，通常无需配置。</p>
+    <div class="row" id="enActions" hidden>
+      <button class="ghost" id="enPickBtn">使用外部引擎目录…</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="startBtn" disabled>进入控制台</button>
+  </div>
+
+  <div class="hint">
+    运行时安装位置：<span id="rtPath" style="font-family:Consolas,monospace"></span>。
+    之后可随时通过菜单「引擎」重新打开本页。卸载控制台不会删除引擎数据。
+  </div>
+
+<script>
+  const rt = window.oasDesktop.runtime;
+  const wz = window.oasDesktop.wizard;
+
+  const rtBadge = document.getElementById('rtBadge');
+  const rtDesc = document.getElementById('rtDesc');
+  const rtActions = document.getElementById('rtActions');
+  const rtBar = document.getElementById('rtBar');
+  const rtBarFill = document.getElementById('rtBarFill');
+  const rtMsg = document.getElementById('rtMsg');
+  const rtUrl = document.getElementById('rtUrl');
+  const enBadge = document.getElementById('enBadge');
+  const enDesc = document.getElementById('enDesc');
+  const enActions = document.getElementById('enActions');
+  const startBtn = document.getElementById('startBtn');
+
+  function badge(el, text, cls) { el.textContent = text; el.className = 'badge ' + cls; }
+
+  async function refresh() {
+    const st = await rt.status();
+    document.getElementById('rtPath').textContent = st.dir;
+    rtUrl.value = st.defaultUrl;
+    if (st.installed) {
+      badge(rtBadge, '已安装' + (st.version ? ' · v' + st.version : ''), 'ok');
+      rtDesc.textContent = '引擎执行任务所需的 Python 环境与依赖库已就绪。';
+      rtActions.hidden = true; rtBar.hidden = true;
+    } else {
+      badge(rtBadge, '未安装', 'bad');
+      rtDesc.textContent = '引擎执行任务所需的 Python 环境与依赖库（约 350 MB，仅首次需要）。';
+      rtActions.hidden = false;
+    }
+    const info = await wz.getEngineInfo();
+    if (info && info.dir && info.checks && info.checks.bridge) {
+      badge(enBadge, info.bundled ? '内置引擎' : '外部引擎', 'ok');
+      enDesc.textContent = '引擎目录：' + info.dir;
+      enActions.hidden = !info.bundled;
+    } else {
+      badge(enBadge, '缺失', 'bad');
+      enDesc.textContent = '未找到可用引擎，请选择引擎目录。';
+      enActions.hidden = false;
+    }
+    const ready = st.installed && info && info.checks && info.checks.bridge && info.checks.python;
+    startBtn.disabled = !ready;
+  }
+
+  rt.onProgress((p) => {
+    if (p.phase === 'downloading') {
+      rtBar.hidden = false;
+      const pct = p.total ? Math.round(p.received * 100 / p.total) : 0;
+      rtBarFill.style.width = pct + '%';
+      rtMsg.hidden = false; rtMsg.className = 'msg';
+      rtMsg.textContent = '下载中 ' + pct + '%（' + (p.total ? (p.received / 1048576).toFixed(0) + ' / ' + (p.total / 1048576).toFixed(0) + ' MB' : (p.received / 1048576).toFixed(0) + ' MB') + '）';
+    } else if (p.phase === 'extracting') {
+      rtMsg.hidden = false; rtMsg.className = 'msg';
+      rtMsg.textContent = '下载完成，正在解压…';
+    } else if (p.phase === 'error') {
+      rtMsg.hidden = false; rtMsg.className = 'msg err';
+      rtMsg.textContent = '安装失败：' + p.error;
+    }
+  });
+
+  document.getElementById('rtDownload').addEventListener('click', async () => {
+    const btn = document.getElementById('rtDownload');
+    btn.disabled = true; btn.textContent = '安装中…';
+    rtBar.hidden = false; rtBarFill.style.width = '0%';
+    rtMsg.hidden = false; rtMsg.className = 'msg'; rtMsg.textContent = '开始下载…';
+    const r = await rt.download(rtUrl.value.trim() || null);
+    btn.disabled = false; btn.textContent = '自动下载并安装';
+    if (r.ok) {
+      rtMsg.hidden = false; rtMsg.className = 'msg ok';
+      rtMsg.textContent = '运行时安装完成。';
+      rtBarFill.style.width = '100%';
+    }
+    refresh();
+  });
+
+  document.getElementById('rtZipBtn').addEventListener('click', async () => {
+    const r = await rt.installFromZip();
+    if (r && !r.ok && !r.canceled) {
+      rtMsg.hidden = false; rtMsg.className = 'msg err';
+      rtMsg.textContent = '安装失败：' + r.error;
+    }
+    refresh();
+  });
+
+  document.getElementById('enPickBtn').addEventListener('click', async () => {
+    const r = await wz.selectEngineDir();
+    if (!r) return;
+    if (r.checks.bridge && r.checks.python) {
+      await wz.saveEnginePath(r.dir);
+    }
+    refresh();
+  });
+
+  startBtn.addEventListener('click', () => wz.done());
+
+  refresh();
+</script>
+</body>
+</html>

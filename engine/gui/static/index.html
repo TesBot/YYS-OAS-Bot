@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OAS Studio · 阴阳师自动化控制台</title>
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="titlebar" id="titlebar">
+    <span class="tb-title">OAS Studio</span>
+    <span class="tb-sub">阴阳师自动化控制台</span>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">OAS</div>
+        <div class="brand-text">
+          <strong>Studio</strong>
+          <span>阴阳师自动化</span>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav"></nav>
+
+      <div class="side-foot">
+        <div class="bridge-state" id="bridgeState">
+          <span class="dot dot-idle"></span><span>连接中…</span>
+        </div>
+        <div class="side-links">
+          <button class="link-btn" data-act="reload">刷新数据</button>
+          <span class="sep">·</span>
+          <button class="link-btn" data-act="openIssues">问题清单</button>
+          <span class="sep">·</span>
+          <button class="link-btn" data-act="dockToggle">运行日志</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="crumbs">
+          <span class="crumb-root" id="crumbRoot">工作台</span>
+          <span class="crumb-sep">/</span>
+          <span class="crumb-cur" id="crumbCur">总览</span>
+        </div>
+        <div class="top-actions" id="topActions"></div>
+      </header>
+
+      <section class="view" id="view"></section>
+    </main>
+  </div>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <aside class="drawer" id="drawer" hidden aria-hidden="true">
+    <header class="drawer-head">
+      <div class="drawer-head-text">
+        <div class="drawer-kicker" id="drawerKicker"></div>
+        <h2 id="drawerTitle"></h2>
+      </div>
+      <button class="icon-btn" data-act="closeDrawer" title="关闭">
+        <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="drawer-body" id="drawerBody"></div>
+    <footer class="drawer-foot" id="drawerFoot"></footer>
+  </aside>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modal-card" id="modalCard" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <!-- 运行日志坞：执行编排时自动展开，实时滚动显示引擎日志（单一流 + 中文节点注释） -->
+  <section class="logdock" id="logDock" hidden>
+    <div class="logdock-resizer" id="dockResize" title="拖拽调整高度"></div>
+    <header class="logdock-head">
+      <span class="dot dot-ok" id="dockDot"></span>
+      <strong id="dockTitle">运行日志</strong>
+      <span class="logdock-sub" id="dockSub">尚未开始执行</span>
+      <div class="grow"></div>
+      <button class="icon-btn" data-act="dockClear" title="清空显示">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+      </button>
+      <button class="icon-btn" data-act="dockToggle" title="收起面板">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14l6-6 6 6"/></svg>
+      </button>
+    </header>
+    <div class="logdock-body" id="dockBody">
+      <div class="log dock-log" id="dockLog"></div>
+    </div>
+  </section>
+
+  <!-- 收起日志坞后的悬浮入口（运行中出现） -->
+  <button class="dock-peek" id="dockPeek" data-act="dockPeekOpen" hidden>
+    <span class="dot dot-ok"></span><span>运行日志</span>
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+  </button>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

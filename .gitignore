@@ -1,0 +1,21 @@
+# 构建产物与临时文件
+dist/
+console/node_modules/
+console/package-lock.json
+
+# Python 运行时不入库（约 650MB，用 tools/pack_runtime.py 打成 zip 分发）
+runtime/python/
+runtime/*.zip
+
+# 引擎运行时生成内容
+engine/log/
+engine/config/*.json.bak*
+engine/config/oas*.json
+engine/gui/.cache/
+engine/**/__pycache__/
+**/__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+Thumbs.db
