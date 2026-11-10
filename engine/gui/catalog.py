@@ -358,7 +358,7 @@ FIELD_LABELS: dict[str, str] = {
     "serial": "adb 地址", "package_name": "游戏包名",
     "screenshot_method": "截图方式", "control_method": "点击方式",
     "screenshot_interval": "截图间隔", "combat_screenshot_interval": "战斗截图间隔",
-    "costume_main_type": "庭院皮肤候选", "costume_realm_type": "结界皮肤",
+    "costume_main_type": "庭院皮肤", "costume_realm_type": "结界皮肤",
     "costume_theme_type": "主题皮肤", "costume_shikigami_type": "式神皮肤",
     "costume_sign_type": "签到皮肤", "costume_battle_type": "战斗皮肤",
 }
@@ -548,8 +548,8 @@ FIELD_HINTS: list[tuple[str, str]] = [
     ("lock_team_enable", "锁阵容后无法在准备界面换预设，与 preset_enable 互斥。"),
     ("switch_group_team", "格式 `组,套`，如 `2,3` 表示第 2 组第 3 套；`-1,-1` 表示不切换。"),
     ("switch_soul_config.enable", "进入战斗前先去式神录切换整套御魂，这是真正的『战斗前』调整。"),
-    ("costume_main_type", "庭院皮肤候选。必须包含账号实际皮肤，否则导航会失败；"
-                          "建议全选 19 个候选让引擎自动探测。"),
+    ("costume_main_type", "庭院皮肤。引擎按它切换庭院识别模板，填错会导致页面识别全部失败。"
+                          "控制台会在任务启动时自动识别并纠正，换账号后可在「总览」点「刷新识别」。"),
     ("boss_number", "挑战几个地域鬼王。日常建议 1-3。"),
     ("boss_reward", "悬赏鬼王额外挑战一次，会消耗额外体力。"),
     ("continuous_battle", "连续战斗（同一阵容连打）。部分玩法不支持连战。"),
@@ -571,8 +571,11 @@ KNOWN_ISSUES: list[dict] = [
         "severity": "warn",
         "title": "庭院皮肤设置",
         "scope": "所有任务",
-        "detail": "如果任务无法正常执行、反复卡在同一界面或报错，通常是当前使用的庭院皮肤不被识别。",
-        "fix": "请在游戏内把庭院皮肤更换回初始（默认）庭院后再运行任务。",
+        "detail": "引擎的庭院识别模板必须与实际皮肤一致，配错会表现为反复卡在同一界面、"
+                  "日志里 `Page detect miss` 刷屏并报 Game page unknown。上游支持 18 种庭院皮肤"
+                  "（默认 + 17 套），但没有自动识别。",
+        "fix": "控制台会在任务启动时自动识别并纠正，命中缓存后不再重复识别（默认 1 小时有效）。"
+               "模拟器断开过会自动作废缓存；如果是同一台模拟器换了账号，到「总览」点「刷新识别」即可。",
     },
     {
         "id": "preset-team-5",

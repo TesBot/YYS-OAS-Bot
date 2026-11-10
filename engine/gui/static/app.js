@@ -314,15 +314,39 @@
         ? `${inst.serial} · ${device.resolution || ''}`
         : `${inst.serial || '—'} · 未扫描到`),
       metaItem('点击/截图', `${inst.control_method || '?'} / ${inst.screenshot_method || '?'}`),
-      metaItem('庭院皮肤', inst.costume_count ? `${inst.costume_count} 个候选` : '未配置（会失败）'),
+      metaItem('庭院皮肤', costumeSummary(inst)),
       metaItem('编排表', (inst.flows && inst.flows.length) ? inst.flows.join('、') : '未加入'),
     ));
     card.appendChild(el('div', { class: 'acct-actions' },
       btn('测试连接', 'bolt', () => testInstance(inst.name), ''),
+      btn('刷新识别', 'refresh', () => refreshCostume(inst.name), 'ghost'),
       btn('编辑资料', 'sliders', () => openProfileDrawer(inst), 'ghost'),
       btn('解绑', 'trash', () => removeInstance(inst.name), 'danger'),
     ));
     return card;
+  }
+
+  // 庭院皮肤摘要：配置值与最近一次识别结论。换账号后点「刷新识别」即可重判。
+  function costumeSummary(inst) {
+    const cfgName = inst.costume_name || inst.costume_main_type || '';
+    const detected = inst.costume_detected || '';
+    const detectedName = inst.costume_detected_label || detected;
+    if (detected && cfgName && detected !== inst.costume_main_type) {
+      return `${cfgName} → 实际 ${detectedName}`;
+    }
+    if (detected) {
+      const when = inst.costume_checked_at ? timeAgo(inst.costume_checked_at) : '';
+      return `${detectedName}${when ? ' · ' + when + '核对' : ''}`;
+    }
+    return cfgName ? `${cfgName} · 待识别` : '待识别（任务启动时自动判断）';
+  }
+
+  function timeAgo(ts) {
+    const diff = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    return `${Math.floor(diff / 86400)} 天前`;
   }
 
   function instActivity(inst) {
@@ -359,13 +383,16 @@
     } catch (e) { toast('测试失败：' + e.message, 'err'); }
   }
 
-  async function fillCostume(name) {
+  async function refreshCostume(name) {
+    toast('正在识别当前庭院画面…');
     try {
-      await api(`/api/instances/${name}/costume/all`, { method: 'POST' });
-      toast('已写入 19 个庭院皮肤候选', 'ok');
+      const r = await api(`/api/instances/${name}/costume/detect`, { method: 'POST' });
+      const label = r.label || r.detected;
+      if (r.changed) toast(`已按实际画面改为 ${label}（原 ${r.previous}）`, 'ok');
+      else toast(`当前庭院：${label}${r.score ? ' · 得分 ' + r.score : ''}`, 'ok');
       await loadInstances();
       render();
-    } catch (e) { toast('写入失败：' + e.message, 'err'); }
+    } catch (e) { toast('识别失败：' + e.message, 'err'); }
   }
 
   async function removeInstance(name) {
@@ -1183,9 +1210,8 @@
       const cn = PAGE_CN[m[1]] || m[1].replace(/^page_/, '');
       return `已进入「${cn}」`;
     }
-    if ((m = line.match(/Detected random main costume: (\S+)/))) {
-      const id = m[1].replace('costume_main', '').replace(/^_/, '');
-      return `识别到庭院皮肤：${id ? '#' + id : '默认'}`;
+    if ((m = line.match(/Detected (?:random )?main costume: (\S+)(?:\s+(\S+))?\s*(?:score=|$)/))) {
+      return `识别到庭院皮肤：${m[2] || m[1].replace('costume_main', '').replace(/^_/, '') || '默认'}`;
     }
     if (/Boss battle already done/.test(line)) return '首领今日已挑战过，跳过首领战';
     if (/Lantern count success/.test(line)) return '灯笼已点满，开始处理奖励';
@@ -1868,10 +1894,10 @@
       grid.appendChild(el('div', { class: 'task-card' },
         el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: inst.nickname || inst.name }),
           el('span', { class: 'badge badge-dim', text: inst.name })),
-        el('div', { class: 'tc-desc', text: `设备 ${inst.serial} · 皮肤候选 ${inst.costume_count}` }),
+        el('div', { class: 'tc-desc', text: `设备 ${inst.serial} · 庭院皮肤 ${inst.costume_name || inst.costume_main_type || '待识别'}` }),
         el('div', { class: 'tc-ops' },
           btn('打开 JSON', 'cog', () => openRawDrawer(inst.name), 'sm'),
-          btn('全选皮肤', 'check', () => fillCostume(inst.name), 'sm ghost')),
+          btn('刷新识别', 'refresh', () => refreshCostume(inst.name), 'sm ghost')),
       ));
     });
     root.appendChild(grid);
