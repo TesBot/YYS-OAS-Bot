@@ -25,6 +25,14 @@ let mainWindow = null;
 let wizardWindow = null;
 let bridgeProc = null;
 let bridgeOwned = false;
+let adoptedBridgePid = 0; // 复用到的既有桥接（上次崩溃留下的孤儿），退出时也要回收
+
+// 单实例锁：用户重复双击时聚焦已有窗口，而不是起第二个看不见的实例
+// （第二个实例会让「关闭程序 → 重装」一直提示程序正在运行）。
+const singleInstance = app.requestSingleInstanceLock();
+if (!singleInstance) {
+  app.quit();
+}
 
 // ────────────────────────── 设置（引擎目录） ──────────────────────────
 
@@ -152,6 +160,22 @@ function probe(port, timeout = 1200) {
   });
 }
 
+// 读取已存在桥接服务的身份（pid + 引擎目录），用于判断「这是自己上次崩溃留下的孤儿」。
+function probeHealth(port, timeout = 1500) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/api/health', timeout }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
 async function waitBridge(maxMs = 40000) {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
@@ -191,8 +215,19 @@ function startBridge(engineDir) {
 }
 
 async function ensureBridge() {
-  if (await probe(BRIDGE_PORT)) return true; // 引擎桥接已在运行（可能由另一实例拉起），复用
   const engineDir = activeEngineDir();
+  const info = await probeHealth(BRIDGE_PORT);
+  if (info && info.ok) {
+    // 端口上已有桥接：若它跑的就是当前引擎目录，说明是上次异常退出留下的孤儿，
+    // 记下 pid，本次退出时一并回收，否则它会一直占着引擎目录导致无法重装。
+    const sameEngine = engineDir && info.root &&
+      path.resolve(info.root).toLowerCase() === path.resolve(engineDir).toLowerCase();
+    if (sameEngine && info.pid) {
+      adoptedBridgePid = Number(info.pid);
+      console.log(`[bridge] 复用已有服务 pid=${info.pid}（退出时回收）`);
+    }
+    return true;
+  }
   if (!engineDir || !findPython(engineDir)) return false;
   if (!startBridge(engineDir)) return false;
   return waitBridge();
@@ -468,6 +503,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  if (!singleInstance) return; // 已有实例在跑，本进程立刻退出
   registerAppProtocol();
   buildMenu();
 
@@ -501,14 +537,48 @@ app.whenReady().then(async () => {
   });
 });
 
+// 结束一棵进程树。只 kill 直连子进程（TerminateProcess）不会触发 Python 的
+// atexit，OCR 守护进程会变成孤儿，表现为「关了控制台但进程还在」。
+function killTree(pid) {
+  try {
+    if (!pid) return;
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+  } catch { /* 进程已退出 */ }
+}
+
+function stopBridge() {
+  const ownPid = bridgeOwned && bridgeProc ? bridgeProc.pid : 0;
+  bridgeProc = null;
+  killTree(ownPid);
+  if (adoptedBridgePid && adoptedBridgePid !== ownPid) killTree(adoptedBridgePid);
+  adoptedBridgePid = 0;
+}
+
+// 单实例锁：允许用户重复双击时聚焦已有窗口，而不是起第二个看不见的实例
+// （第二个实例会让「关闭程序→重装」一直提示程序正在运行）。
+if (singleInstance) {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } else if (!wizardWindow || wizardWindow.isDestroyed()) {
+      createWindow();
+    }
+  });
+}
+
 app.on('window-all-closed', () => {
   if (bridgeStarting) return; // 向导已关、主窗口未建：过渡期不退出
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
-  if (bridgeOwned && bridgeProc) {
-    try { bridgeProc.kill(); } catch { /* ignore */ }
-    bridgeProc = null;
-  }
+app.on('before-quit', stopBridge);
+app.on('will-quit', stopBridge);
+process.on('exit', () => {
+  try { stopBridge(); } catch { /* ignore */ }
 });

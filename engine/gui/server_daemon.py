@@ -16,6 +16,9 @@
 
     bridge 退出时通过 PID 文件 taskkill 整个进程树；异常退出留下的
     残留会在 bridge 下次启动时被清理。
+
+    另外这里会盯住父进程（bridge）：父进程一旦消失就回收自身进程树，
+    避免控制台被强杀后留下孤儿 python 进程。
 """
 
 from __future__ import annotations
@@ -31,6 +34,12 @@ sys.path.insert(0, str(ROOT))
 def main() -> int:
     from module.logger import logger
     from module.ocr.rpc import ensure_ocr_server_started
+    from gui.proc_guard import ppid_from_argv, watch_parent
+
+    parent = ppid_from_argv(sys.argv[1:])
+    if parent:
+        watch_parent(parent, interval=3.0)
+        logger.info(f"Server daemon: watching parent pid {parent}")
 
     logger.info("Server daemon: starting ocr service")
     ensure_ocr_server_started()

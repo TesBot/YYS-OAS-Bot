@@ -49,8 +49,21 @@ def main() -> int:
         action="store_true",
         help="兼容旧版控制台传参。引擎已回归上游行为，此参数不再改变执行逻辑。",
     )
+    parser.add_argument(
+        "--parent-pid",
+        type=int,
+        default=0,
+        help="桥接服务进程号。父进程消失时本进程自动退出，避免留下孤儿。",
+    )
     args = parser.parse_args()
     task = resolve_task(args.task)
+
+    # 桥接被强杀（TerminateProcess）时不会走 Python 的清理逻辑，
+    # 所以这里自己盯住父进程，父进程没了就收工。
+    if args.parent_pid:
+        from gui.proc_guard import watch_parent
+
+        watch_parent(args.parent_pid, interval=3.0)
 
     if args.force_fight:
         print("=== NOTE: --force-fight 已废弃（引擎回归上游），忽略 ===", flush=True)

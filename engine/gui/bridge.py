@@ -103,7 +103,8 @@ def _start_server_daemon() -> None:
     fh = open(log_path, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - 随守护进程存续
     try:
         proc = subprocess.Popen(
-            [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "server_daemon.py")],
+            [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "server_daemon.py"),
+             "--parent-pid", str(os.getpid())],
             cwd=str(ROOT), stdout=fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, creationflags=creationflags)
     except Exception:  # noqa: BLE001 - 守护进程起不来时回退为旧行为（runner 自起自停）
@@ -581,6 +582,7 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 def health():
     return {
         "ok": True,
+        "pid": os.getpid(),
         "root": str(ROOT),
         "python": PYTHON.exists(),
         "adb": ADB.exists(),
@@ -1188,7 +1190,8 @@ def _spawn_run(instance: str, task: str, force_fight: bool, batch: str | None = 
     log_path = ROOT / "log" / "gui" / f"{run_id}_{instance}_{task}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "runner.py"),
-           "--config", instance, "--task", task]
+           "--config", instance, "--task", task,
+           "--parent-pid", str(os.getpid())]
     if force_fight:
         cmd.append("--force-fight")
     popen_kwargs = {}
