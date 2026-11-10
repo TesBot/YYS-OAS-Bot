@@ -58,4 +58,4 @@ dist/      构建产物（不入库）
 
 ## 许可
 
-GPL-3.0（见 `engine/LICENSE`），基于 runhey/onmyoji_auto_script 衍生。
+GPL-3.0（见 [LICENSE](LICENSE)），基于 runhey/onmyoji_auto_script 衍生。
