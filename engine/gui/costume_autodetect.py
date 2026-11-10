@@ -40,10 +40,16 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import cv2
+
 from module.logger import logger
 
 # 第一名与第二名的最小分差；低于该值认为「认不准」，不动配置
 MARGIN = 0.03
+# 达到该分数直接采信（避免相似皮肤撞车，如 main16 狐栖归处 / main17 玉岚狐庭）
+HIGH_CONFIDENCE = 0.975
+# 模板灰度缓存：(id(asset), scale) -> 灰度数组
+_TPL_CACHE: dict = {}
 # 缓存有效期（秒）；OAS_COSTUME_TTL=0 表示每次都重新比对
 DEFAULT_TTL = 3600
 STATE_FILE = Path("config") / "gui_costume_state.json"
@@ -151,17 +157,89 @@ def _candidates() -> List[Tuple[object, List[object]]]:
     return _CANDIDATES
 
 
-def _probe(asset, image) -> Tuple[bool, float]:
-    """用引擎的匹配器试一次，并还原被 match() 改写的 roi_front。"""
-    saved = list(asset.roi_front)
+def _gray(frame) -> "cv2.Mat":
+    """均值灰度：对 RGB/BGR 顺序不敏感（换成加权灰度会被通道顺序影响）。"""
+    if frame.ndim == 2:
+        return frame
+    return frame.mean(axis=2).astype("uint8")
+
+
+def _gray_template(asset, scale: float):
+    """模板的灰度缓存（按缩放级别），避免每次重复解码。"""
+    key = (id(asset), scale)
+    cached = _TPL_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
-        matched = asset.match(image)
-        return matched, float(getattr(asset, "last_score", 0.0) or 0.0)
-    except Exception as exc:  # 模板损坏/尺寸异常都不该拖垮任务
-        logger.warning(f"[Costume] 模板 {getattr(asset, 'name', '?')} 匹配异常: {exc}")
-        return False, 0.0
-    finally:
-        asset.roi_front[:] = saved
+        template = asset.image  # 引擎按 RGB 加载
+    except Exception:
+        return None
+    if template is None or template.size == 0:
+        return None
+    gray = _gray(template)
+    if scale != 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    _TPL_CACHE[key] = gray
+    return gray
+
+
+def _coarse(image):
+    """粗筛：灰度半分辨率全图搜索。
+
+    返回 [(score, main_type, [(asset, (x, y)), ...]), ...] 降序，
+    坐标已换算回原图尺度，供后续局部复核定位。
+
+    为什么用全图而不是固定 ROI：庭院是可拖动的场景，取景位置会变；
+    上游模板注册的 roi_back 是采集时的位置，换个位置就 miss。
+    """
+    gray = _gray(image)
+    height, width = gray.shape[:2]
+    scale = 0.5 if width >= 800 else 1.0
+    small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale != 1.0 else gray
+
+    results = []
+    for main_type, assets in _candidates():
+        best, hits = 0.0, []
+        for asset in assets:
+            template = _gray_template(asset, scale)
+            if template is None or template.shape[0] > small.shape[0] or template.shape[1] > small.shape[1]:
+                continue
+            res = cv2.matchTemplate(small, template, cv2.TM_CCOEFF_NORMED)
+            score = float(res.max())
+            _, _, _, loc = cv2.minMaxLoc(res)
+            if score >= best:
+                best = score
+            hits.append((asset, (int(loc[0] / scale), int(loc[1] / scale)), score))
+        results.append((best, main_type, hits))
+    results.sort(key=lambda item: item[0], reverse=True)
+    return results
+
+
+def _verify(image, asset, center, pad: int = 48) -> float:
+    """在粗筛命中的位置附近，用**彩色原分辨率**复核，兼容两种通道顺序。
+
+    局部复核而不是全图彩色匹配：全图彩色匹配单次就要上百毫秒，
+    18 套皮肤跑一遍要 5 秒；裁一小块后单次只要十几毫秒。
+    """
+    try:
+        template = asset.image
+    except Exception:
+        return 0.0
+    if template is None or template.size == 0:
+        return 0.0
+    x, y = center
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(image.shape[1], x + template.shape[1] + pad)
+    y1 = min(image.shape[0], y + template.shape[0] + pad)
+    roi = image[y0:y1, x0:x1]
+    if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
+        return 0.0
+    best = 0.0
+    for frame in (roi, roi[:, :, ::-1]):
+        for tpl in (template, template[:, :, ::-1]):
+            best = max(best, float(cv2.matchTemplate(frame, tpl, cv2.TM_CCOEFF_NORMED).max()))
+    return best
 
 
 def detect(image) -> Tuple[Optional[object], List[Tuple[float, float, object]]]:
@@ -170,26 +248,41 @@ def detect(image) -> Tuple[Optional[object], List[Tuple[float, float, object]]]:
     Returns:
         (命中的 MainType 或 None, [(score, threshold, main_type), ...] 降序)
     """
+    coarse = _coarse(image)
+    if not coarse:
+        return None, []
+
+    # 只复核粗筛前几名，既省时间也不影响结论（前几名以外不可能达标）
     scored: List[Tuple[float, float, object]] = []
-    for main_type, assets in _candidates():
-        best, threshold = 0.0, 0.0
-        for asset in assets:
-            _, score = _probe(asset, image)
-            best = max(best, score)
+    for _, main_type, hits in coarse[:4]:
+        best, threshold, center_asset = 0.0, 0.0, None
+        for asset, center, _score in hits:
+            score = _verify(image, asset, center)
+            if score > best:
+                best, center_asset = score, asset
             threshold = max(threshold, float(getattr(asset, "threshold", 0.8)))
         scored.append((best, threshold, main_type))
     scored.sort(key=lambda item: item[0], reverse=True)
 
     passing = [item for item in scored if item[0] >= item[1]]
     if not passing:
+        top = "、".join(f"{getattr(mt, 'value', mt)}={sc:.3f}" for sc, _, mt in scored[:3])
+        logger.info(f"[Costume] 没有皮肤达到阈值，最高分：{top}")
         return None, scored
-    if len(passing) > 1 and passing[0][0] - passing[1][0] < MARGIN:
+
+    best = passing[0]
+    # 高分直通：模板通常裁自同一套皮肤的实机画面，真身一般 ≥0.98；
+    # 相似皮肤（如 16 狐栖归处 / 17 玉岚狐庭 都是狐主题）能到 0.95 左右，
+    # 这种情况按分差判断会和真身撞车，所以高分时直接采信。
+    if best[0] >= HIGH_CONFIDENCE:
+        return best[2], scored
+    if len(passing) > 1 and best[0] - passing[1][0] < MARGIN:
         logger.warning(
             f"[Costume] 庭院皮肤识别不唯一: {passing[0][2]}={passing[0][0]:.3f} / "
             f"{passing[1][2]}={passing[1][0]:.3f}，保持原配置"
         )
         return None, scored
-    return passing[0][2], scored
+    return best[2], scored
 
 
 def _value(main_type) -> str:
