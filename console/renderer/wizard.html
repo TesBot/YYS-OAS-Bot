@@ -14,8 +14,9 @@
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 22px 24px 18px; background: var(--bg); color: var(--text);
-    font-family: var(--sans); font-size: 13px; line-height: 1.55; overflow-y: auto;
+    margin: 0; padding: 22px 24px 20px; background: var(--bg); color: var(--text);
+    font-family: var(--sans); font-size: 13px; line-height: 1.55;
+    display: flex; flex-direction: column; min-height: 100vh; overflow-y: auto;
   }
   .logo { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
   .logo .mark {
@@ -38,9 +39,10 @@
   .msg.err { color: var(--err); }
   .msg.ok { color: var(--ok); }
   .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .row > button { flex: 1; min-width: 0; }
   button {
     font-family: var(--sans); font-size: 12.5px; border-radius: 7px; cursor: pointer;
-    padding: 7px 14px; border: 1px solid transparent;
+    padding: 8px 14px; border: 1px solid transparent;
   }
   .primary { background: var(--accent); color: #fff; }
   .primary:hover { background: var(--accent-2); }
@@ -52,6 +54,12 @@
     color: var(--text-2);
   }
   .hint { color: var(--text-3); font-size: 11px; margin-top: 12px; line-height: 1.5; }
+  /* 进入控制台：底部通栏主按钮 */
+  .footer { margin-top: auto; padding-top: 16px; }
+  #startBtn {
+    width: 100%; font-size: 14px; padding: 11px 0; font-weight: 600;
+    letter-spacing: 1px; border-radius: 9px;
+  }
 </style>
 </head>
 <body>
@@ -73,12 +81,12 @@
     <button class="ghost" id="zipBtn">从本地 zip 安装</button>
   </div>
 
-  <div class="row">
-    <button class="primary" id="startBtn" disabled>进入控制台</button>
-  </div>
-
   <div class="hint" id="hint" hidden>
     正在解压（约 650 MB），可能需要一两分钟。解压在后台进行，若界面短暂无响应请耐心等待，不要强制关闭。
+  </div>
+
+  <div class="footer">
+    <button class="primary" id="startBtn" disabled>进入控制台</button>
   </div>
 
 <script>
