@@ -1,9 +1,7 @@
 # This Python file uses the following encoding: utf-8
 # @author runhey
 # github https://github.com/runhey
-from tasks.GuguArtStudio.config import GuguArtStudio
 from tasks.GuildActivityMonitor.config import GuildActivityMonitor
-from tasks.OtherWorldTwilight.config import OtherWorldTwilight
 from typing import Dict, Any
 
 import re
@@ -14,7 +12,6 @@ from pydantic import BaseModel, ValidationError, Field
 
 from module.config.utils import *
 from module.logger import logger
-from module.config.failed_tasks import FailedTaskStore
 
 # 导入配置的Python文件
 from tasks.Component.config_base import ConfigBase, TimeDelta
@@ -47,6 +44,7 @@ from tasks.Sougenbi.config import Sougenbi
 from tasks.FallenSun.config import FallenSun
 from tasks.EternitySea.config import EternitySea
 from tasks.SixRealms.config import SixRealms
+from tasks.OtherWorldTwilight.config import OtherWorldTwilight
 from tasks.RealmRaid.config import RealmRaid
 from tasks.CollectiveMissions.config import CollectiveMissions
 from tasks.Hunt.config import Hunt
@@ -56,17 +54,14 @@ from tasks.DemonRetreat.config import DemonRetreat
 from tasks.GuildActivityMonitor.config import GuildActivityMonitor
 
 # 这一部分是活动的配置-----------------------------------------------------------------------------------------------------
-from tasks.ActivityShikigami.config import ActivityShikigami, GeneralConfig, VersionExplorationConfig
-from tasks.MomentActivity.config import MomentActivity
-from tasks.Moonlight.config import Moonlight
-from tasks.MartialArts.config import MartialArts
+from tasks.ActivityShikigami.config import ActivityShikigami
 from tasks.MetaDemon.config import MetaDemon
 from tasks.FrogBoss.config import FrogBoss
 from tasks.FloatParade.config import FloatParade
-from tasks.LBS.config import LBS
 from tasks.Quiz.config import Quiz
 from tasks.KittyShop.config import KittyShop
 from tasks.DyeTrials.config import DyeTrials
+from tasks.BudokaiTournament.config import BudokaiTournament
 # ----------------------------------------------------------------------------------------------------------------------
 
 # 肝帝专属---------------------------------------------------------------------------------------------------------------
@@ -81,13 +76,11 @@ from tasks.MemoryScrolls.config import MemoryScrolls
 
 # 每周任务---------------------------------------------------------------------------------------------------------------
 from tasks.TrueOrochi.config import TrueOrochi
-from tasks.WeeklyPurchase.config import WeeklyPurchase
+from tasks.RichMan.config import RichMan
 from tasks.Secret.config import Secret
 from tasks.WeeklyTrifles.config import WeeklyTrifles
 from tasks.MysteryShop.config import MysteryShop
 from tasks.Duel.config import Duel
-from tasks.Chess.config import Chess
-from tasks.DraftDuel.config import DraftDuel
 # ----------------------------------------------------------------------------------------------------------------------
 
 class ConfigModel(ConfigBase):
@@ -124,21 +117,16 @@ class ConfigModel(ConfigBase):
     fallen_sun: FallenSun = Field(default_factory=FallenSun)
     eternity_sea: EternitySea = Field(default_factory=EternitySea)
     six_realms: SixRealms = Field(default_factory=SixRealms)
-    other_world_twilight : OtherWorldTwilight = Field(default_factory=OtherWorldTwilight)
+    other_world_twilight: OtherWorldTwilight = Field(default_factory=OtherWorldTwilight)
 
     # 这些是活动的
     activity_shikigami: ActivityShikigami = Field(default_factory=ActivityShikigami)
-    moment_activity: MomentActivity = Field(default_factory=MomentActivity)
-    moonlight: Moonlight = Field(default_factory=Moonlight)
-    martial_arts: MartialArts = Field(default_factory=MartialArts)
     meta_demon: MetaDemon = Field(default_factory=MetaDemon)
     frog_boss: FrogBoss = Field(default_factory=FrogBoss)
     float_parade: FloatParade = Field(default_factory=FloatParade)
-    lbs: LBS = Field(default_factory=LBS)
     quiz: Quiz = Field(default_factory=Quiz)
     kitty_shop: KittyShop = Field(default_factory=KittyShop)
     dye_trials: DyeTrials = Field(default_factory=DyeTrials)
-    gugu_art_studio: GuguArtStudio = Field(default_factory=GuguArtStudio)
 
     # 这些是肝帝专属
     bondling_fairyland: BondlingFairyland = Field(default_factory=BondlingFairyland)
@@ -151,13 +139,11 @@ class ConfigModel(ConfigBase):
 
     # 这些是每周任务
     true_orochi: TrueOrochi = Field(default_factory=TrueOrochi)
-    weekly_purchase: WeeklyPurchase = Field(default_factory=WeeklyPurchase)
+    rich_man: RichMan = Field(default_factory=RichMan)
     secret: Secret = Field(default_factory=Secret)
     weekly_trifles: WeeklyTrifles = Field(default_factory=WeeklyTrifles)
     mystery_shop: MysteryShop = Field(default_factory=MysteryShop)
     duel: Duel = Field(default_factory=Duel)
-    chess: Chess = Field(default_factory=Chess)
-    draft_duel: DraftDuel = Field(default_factory=DraftDuel)
 
     # 阴阳寮
     collective_missions: CollectiveMissions = Field(default_factory=CollectiveMissions)
@@ -167,86 +153,19 @@ class ConfigModel(ConfigBase):
     guild_banquet: GuildBanquet = Field(default_factory=GuildBanquet)
     demon_retreat: DemonRetreat = Field(default_factory=DemonRetreat)
     guild_activity_monitor: GuildActivityMonitor = Field(default_factory=GuildActivityMonitor)
+    budokai_tournament: BudokaiTournament = Field(default_factory=BudokaiTournament)
 
-    def __init__(self, config_name: str=None, **data) -> None:
+    def __init__(self, config_name: str=None) -> None:
         """
 
         :param config_name:
         """
-        if data:
-            data = self._migrate_renamed_tasks(data)
-            if config_name:
-                data["config_name"] = config_name
-            super().__init__(**data)
-            return
         if not config_name:
             super().__init__()
             return
-        data = self._migrate_renamed_tasks(self.read_json(config_name))
+        data = self.read_json(config_name)
         data["config_name"] = config_name
         super().__init__(**data)
-
-    @staticmethod
-    def _migrate_renamed_tasks(data: dict) -> dict:
-        """兼容 RichMan/FlightChess 更名前保存的用户配置。"""
-        data = dict(data)
-        if data.get('running_task') in ('RichMan', 'Fakegod', 'FlightChess'):
-            data['running_task'] = 'ActivityShikigami'
-        old_rich_man = data.get('rich_man')
-        is_old_weekly_purchase = isinstance(old_rich_man, dict) and any(
-            key in old_rich_man for key in ('special_room', 'thousand_things', 'guild_store')
-        )
-
-        if is_old_weekly_purchase and 'weekly_purchase' not in data:
-            data['weekly_purchase'] = old_rich_man
-
-        old_flight_chess = data.pop('flight_chess', None)
-        if old_flight_chess is not None:
-            data['rich_man'] = old_flight_chess
-        elif is_old_weekly_purchase:
-            data.pop('rich_man', None)
-
-        # 独立的大富翁和伪神降临重新并入式神活动，并由 ActivityShikigami
-        # 自身的配置迁移器完成字段级转换。
-        legacy_rich_man = data.pop('rich_man', None)
-        legacy_fakegod = data.pop('fakegod', None)
-        activity = dict(data.get('activity_shikigami') or {})
-        if isinstance(legacy_rich_man, dict):
-            activity['_legacy_rich_man'] = legacy_rich_man
-        if isinstance(legacy_fakegod, dict):
-            activity['_legacy_fakegod'] = legacy_fakegod
-
-        scheduler = activity.get('scheduler', {})
-        if not scheduler.get('enable'):
-            for legacy in (legacy_rich_man, legacy_fakegod):
-                legacy_scheduler = legacy.get('scheduler', {}) if isinstance(legacy, dict) else {}
-                if legacy_scheduler.get('enable'):
-                    activity['scheduler'] = legacy_scheduler
-                    break
-        # Move only this version's settings; keep explicit new-task settings authoritative.
-        version_keys = ('version_exploration_config', 'version_ruins_battle_conf',
-                        'version_trial_battle_conf')
-        moved = {key: activity.pop(key) for key in version_keys if key in activity}
-        if moved and 'moment_activity' not in data:
-            general = dict(activity.get('general_config') or {})
-            moved['general_config'] = {key: general[key] for key in
-                                       ('limit_time', 'active_souls_clean') if key in general}
-            moved['scheduler'] = dict(activity.get('scheduler') or {})
-            # A menu migration does not authorize enabling a new scheduled task.
-            moved['scheduler']['enable'] = False
-            data['moment_activity'] = moved
-        old_selection = moved.get('version_exploration_config')
-        if isinstance(old_selection, dict) and VersionExplorationConfig.parse_battle_selection(
-                old_selection.get('battle_selection')):
-            general = dict(activity.get('general_config') or {})
-            if 'task_sequence' in general:
-                general['task_sequence'] = [item for item in
-                    GeneralConfig.parse_task_sequence(general['task_sequence'])
-                    if item != '探索']
-                activity['general_config'] = general
-        data['activity_shikigami'] = activity
-
-        return data
 
     def __setattr__(self, key, value):
         """
@@ -419,12 +338,6 @@ class ConfigModel(ConfigBase):
                 if '$ref' in value:  # list
                     enum_key = re.search(r"/([^/]+)$", value['$ref']).group(1)
                     item["enumEnum"] = definitions[enum_key]["enum"]
-                elif value.get('type') == 'array' and '$ref' in value.get('items', {}):
-                    enum_key = re.search(r"/([^/]+)$", value['items']['$ref']).group(1)
-                    enum_values = definitions.get(enum_key, {}).get('enum')
-                    if enum_values:
-                        item["type"] = "multi_enum"
-                        item["enumEnum"] = enum_values
                 # if 'allOf' in value:
                 #     enum_key = re.search(r"/([^/]+)$", value['allOf'][0]['$ref']).group(1)
                 #     item["enumEnum"] = definitions[enum_key]["enum"]
@@ -437,8 +350,6 @@ class ConfigModel(ConfigBase):
 
         result: dict[str, list] = {}
         for key, value in task.model_dump(context={'hide': True}).items():
-            if value == 0xABCDEF:
-                continue
             if key not in groups:
                 for group_name in groups.keys():
                     if group_name in key:
@@ -497,16 +408,19 @@ class ConfigModel(ConfigBase):
             logger.info(f"reset_task_datetime={date_time}")
             self.reset_datetime_for_all_enabled_tasks(date_time)
 
+        # 桌面客户端「启动实例」按钮：点击置 True → 主进程直接拉起该配置的客户端
+        # 实例，完成后改写 False 再走通用保存
+        if (task == 'script' and group == 'desktop' and argument == 'launch_instance'
+                and value is True):
+            from module.device.method.desktop_impl import desktop_launch_instance
+            desktop_launch_instance(self)
+            value = False
+
         # 设置参数
         try:
-            # 先验证再写入，防止未经校验的字符串污染多选配置。
-            candidate = group_object.model_validate({**group_object.model_dump(), argument: value})
-            value = getattr(candidate, argument)
             setattr(group_object, argument, value)
             logger.info(f'Set arg {self.config_name}.{task}.{group}.{argument}.{value}')
             self.save()  # 我是没有想到什么方法可以使得属性改变自动保存的
-            if group == 'scheduler' and argument == 'next_run':
-                FailedTaskStore(self.config_name).reschedule(self.type(task), value)
             return True
         except ValidationError as e:
             logger.error(e)
@@ -579,3 +493,4 @@ if __name__ == "__main__":
         c = ConfigModel()
 
     print(c.script_task('GuildBanquet'))
+

@@ -95,6 +95,11 @@ class Connection(ConnectionAttr):
             config (AzurLaneConfig, str): Name of the user config under ./config
         """
         super().__init__(config)
+        # 桌面客户端模式：不经过 adb 设备/包检测，包名直接用配置值
+        if self.is_desktop:
+            self.package = self.config.script.device.package_name.value
+            logger.attr('PackageName', self.package)
+            return
         if not self.is_over_http:
             self.detect_device()
 
@@ -131,11 +136,12 @@ class Connection(ConnectionAttr):
         cmd = [self.adb_binary, '-s', self.serial] + cmd
         logger.info(f'Execute: {cmd}')
 
-        # Suppress console allocation for ADB launched by GUI/background workers.
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, shell=False,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-        )
+        # Use shell=True to disable console window when using GUI.
+        # Although, there's still a window when you stop running in GUI, which cause by gooey.
+        # To disable it, edit gooey/gui/util/taskkill.py
+
+        # No gooey anymore, just shell=False
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=False)
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -547,19 +553,8 @@ class Connection(ConnectionAttr):
             return True
 
         # Try to connect
-        for trial in range(3):
-            try:
-                msg = self.adb_client.connect(serial)
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
-                logger.warning(f'ADB connect {serial} failed: {e}')
-                retry_sleep(trial)
-                continue
-            except OSError as e:
-                if getattr(e, 'winerror', None) not in (10053, 10054, 10061):
-                    raise
-                logger.warning(f'ADB connect {serial} failed: {e}')
-                retry_sleep(trial)
-                continue
+        for _ in range(3):
+            msg = self.adb_client.connect(serial)
             logger.info(msg)
             if 'connected' in msg:
                 # Connected to 127.0.0.1:59865
@@ -578,9 +573,9 @@ class Connection(ConnectionAttr):
                 raise EmulatorNotRunningError
 
         # Failed to connect
-        logger.warning(f'Failed to connect {serial} after 3 trial, detect device status')
+        logger.warning(f'Failed to connect {serial} after 3 trial, assume connected')
         self.detect_device()
-        raise EmulatorNotRunningError
+        return False
 
     @Config.when(DEVICE_OVER_HTTP=True)
     def adb_connect(self, serial):
@@ -608,68 +603,22 @@ class Connection(ConnectionAttr):
         del_cached_property(self, 'adb_client')
         _ = self.adb_client
 
-    def shared_adb_environment_reasons(self, devices: SelectedGrids = None) -> list[str]:
-        reasons = []
-        if self.is_over_http or not self.is_emulator:
-            return reasons
-
-        emulator_type = None
-        if hasattr(self, 'emulator_instance'):
-            try:
-                instance = self.emulator_instance
-                if instance is not None:
-                    emulator_type = instance.type
-            except Exception as e:
-                logger.warning(f'[adb-reconnect] failed to get emulator type: {e}')
-
-        if hasattr(self, 'all_emulator_instances'):
-            try:
-                instances = []
-                for emulator_instance in self.all_emulator_instances:
-                    if emulator_type and getattr(emulator_instance, 'type', None) != emulator_type:
-                        continue
-                    if getattr(emulator_instance, 'serial', ''):
-                        instances.append(emulator_instance.serial)
-                serials = sorted(set(instances))
-                if len(serials) > 1:
-                    reasons.append(f'emulator_instances={len(serials)}')
-            except Exception as e:
-                logger.warning(f'[adb-reconnect] failed to count emulator instances: {e}')
-
-        if devices is not None:
-            try:
-                available = devices.select(status='device')
-                if available.count > 1:
-                    reasons.append(f'adb_devices={available.count}')
-            except Exception as e:
-                logger.warning(f'[adb-reconnect] failed to count adb devices: {e}')
-
-        return reasons
-
     @Config.when(DEVICE_OVER_HTTP=False)
     def adb_reconnect(self):
         """
            Reboot adb client if no device found, otherwise try reconnecting device.
         """
-        devices = self.list_device()
-        shared_reasons = self.shared_adb_environment_reasons(devices=devices)
-        allow_global_restart = self.config.script.device.adb_restart and len(devices) == 0 and not shared_reasons
-
-        logger.info(f'[adb-reconnect] start: serial={self.serial}')
-        if shared_reasons:
-            logger.warning(f'[adb-reconnect] global restart blocked: {", ".join(shared_reasons)}')
-        elif self.config.script.device.adb_restart and len(devices) == 0:
-            logger.info('[adb-reconnect] no devices found, global restart allowed')
-
-        if allow_global_restart:
-            logger.warning(f'[adb-reconnect] global restart: serial={self.serial}')
+        # if self.config.Emulator_AdbRestart and len(self.list_device()) == 0:
+        if self.config.script.device.adb_restart and len(self.list_device()) == 0:
+            # Restart Adb
             self.adb_restart()
+            # Connect to device
+            self.adb_connect(self.serial)
+            self.detect_device()
         else:
-            logger.info(f'[adb-reconnect] local reconnect: serial={self.serial}')
-
-        self.adb_disconnect(self.serial)
-        self.adb_connect(self.serial)
-        self.detect_device()
+            self.adb_disconnect(self.serial)
+            self.adb_connect(self.serial)
+            self.detect_device()
 
     @Config.when(DEVICE_OVER_HTTP=True)
     def adb_reconnect(self):
@@ -747,6 +696,10 @@ class Connection(ConnectionAttr):
                 2: 'HOME key on the top'
                 3: 'HOME key on the left'
         """
+        # 桌面模式：窗口即横屏，方向恒为 0（Normal），不经过 adb dumpsys
+        if self.is_desktop:
+            self.orientation = 0
+            return 0
         _DISPLAY_RE = re.compile(
             r'.*DisplayViewport{.*valid=true, .*orientation=(?P<orientation>\d+), .*deviceWidth=(?P<width>\d+), deviceHeight=(?P<height>\d+).*'
         )

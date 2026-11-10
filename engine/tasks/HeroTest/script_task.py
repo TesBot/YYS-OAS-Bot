@@ -3,22 +3,20 @@
 # github https://github.com/runhey
 from datetime import datetime, timedelta, time
 import random  # type: ignore
-from module.atom.image import RuleImage
-from tasks.Component.GeneralBattle.config_general_battle import GeneralBattleConfig
-
-from tasks.Component.GeneralBattle.general_battle import BattleAction, BattleContext, ExitMatcher, GeneralBattle
-from tasks.GameUi.default_pages import page_battle_result
-from tasks.GameUi.matcher import any_of
-from tasks.HeroTest.assets import HeroTestAssets
-from tasks.GameUi.game_ui import GameUi
-from tasks.Component.SwitchSoul.switch_soul import SwitchSoul
+from typing import Callable
+from module.atom.click import RuleClick
 
 from module.logger import logger
 from module.exception import TaskEnd
-from tasks.HeroTest.config import Layer, HeroTest, SkillMode
-from typing import Callable
+from module.base.timer import Timer
 
 import tasks.GameUi.page as pages
+from tasks.Component.GeneralBattle.general_battle import GeneralBattle
+from tasks.HeroTest.assets import HeroTestAssets
+from tasks.GameUi.game_ui import GameUi
+from tasks.Component.SwitchSoul.switch_soul import SwitchSoul
+from tasks.HeroTest.config import Layer, HeroTest, SkillMode
+
 
 
 class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
@@ -26,37 +24,6 @@ class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
     conf: HeroTest
     page_hero_mode: pages.Page  # 当前英杰对应模式界面(经验or技能)
     success: bool = True
-
-    def _register_custom_pages(self) -> None:
-        page_result = self.navigator.resolve_page(page_battle_result)
-        if page_result is None:
-            return
-        logger.info('Update page_battle_result')
-        page_result.recognizer = any_of(self.I_BCMJ_SKILL_ADD_CONFIRM, page_result.recognizer)
-
-    def _handle_result(self, context: BattleContext, config: GeneralBattleConfig) -> BattleAction:
-        if self.appear(self.I_BCMJ_SKILL_ADD_CONFIRM):
-            mode_wait_dict: dict[Layer, Callable] = {
-                Layer.MIJING: self.hero1_skill_wait,
-                Layer.MENGXU: self.hero2_skill_wait,
-            }
-            if mode_wait_dict.get(self.conf.herotest.layer, None) is not None:
-                mode_wait_dict[self.conf.herotest.layer]()
-            return BattleAction.CONTINUE
-        return super()._handle_result(context, config)
-
-    def _exit_matcher(self) -> ExitMatcher | None:
-        match self.conf.herotest.layer:
-            case Layer.YANWU:
-                return self.I_CHECK_HERO1_EXP
-            case Layer.MIJING:
-                return self.I_CHECK_HERO1_SKILL
-            case Layer.CHUANCHENG:
-                return self.I_CHECK_HERO2_EXP
-            case Layer.MENGXU:
-                return self.I_CHECK_HERO2_SKILL
-            case _:
-                return super()._exit_matcher()
 
     def run(self) -> None:
         self.conf = self.config.hero_test
@@ -84,7 +51,8 @@ class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
             self.goto_page(self.page_hero_mode)
             if not self.can_run(self.conf.herotest.layer):
                 break
-            if not self.enter_battle():
+            entered = self.enter_battle()
+            if not entered:
                 break
             if self.run_general_battle(config=self.conf.general_battle):
                 logger.info("General battle success")
@@ -119,16 +87,75 @@ class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
         self.success = False  # 进入失败且不知道发生了什么情况
         return False
 
+    def battle_wait(self, random_click_swipt_enable: bool) -> bool:
+        self.device.stuck_record_add("BATTLE_STATUS_S")
+        self.device.click_record_clear()
+        logger.info("Start battle process")
+        win = None
+        # 处理不同模式下的结算界面
+        mode_wait_dict: dict[Layer, Callable] = {
+            Layer.MIJING: self.hero1_skill_wait,
+            Layer.MENGXU: self.hero2_skill_wait,
+        }
+        while True:
+            self.screenshot()
+            if win is not None and self.appear(self.O_FIRE, interval=1.5):
+                break
+            if mode_wait_dict.get(self.conf.herotest.layer, None) is not None and \
+                    mode_wait_dict[self.conf.herotest.layer]():
+                win = True
+                continue
+            if self.appear(self.I_WIN, interval=1.2) or \
+                    self.appear(self.I_DE_WIN, interval=1.2) or \
+                    self.appear(self.I_REWARD, interval=1.2):
+                win = True
+                self.click(pages.random_click(ltrb=(False, True, True, False)))
+                continue
+            if self.appear(self.I_FALSE, interval=1.5):
+                win = False
+                self.click(pages.random_click(ltrb=(False, True, True, False)))
+                continue
+            if win is None and random_click_swipt_enable:
+                self.random_click_swipt()
+        logger.info(f'Battle win = {win}')
+        return win
+
     def hero1_skill_wait(self):
-        if self.appear_then_click(self.I_BCMJ_SKILL_ADD1, interval=1) or \
-                self.appear_then_click(self.I_BCMJ_SKILL_ADD2, interval=1) or \
-                self.appear_then_click(self.I_BCMJ_BLESS, interval=1) or \
-                self.appear_then_click(self.I_BCMJ_PROPERTY_ADD_CRITICAL, interval=1) or \
-                self.appear_then_click(self.I_BCMJ__DEFALUT_ATTRIBUTE, interval=1):
-            pass
-        return self.appear_then_click(self.I_BCMJ_SKILL_ADD_CONFIRM, interval=1)
+        if self.wait_until_appear(self.I_BCMJ_SKILL_ADD_CONFIRM, wait_time=2):
+            timer = Timer(10).start()
+            while 1:
+                self.screenshot()
+
+                # https://github.com/runhey/OnmyojiAutoScript/issues/1671
+                if timer.reached_and_reset():
+                    if self.appear(self.I_BCMJ_SKILL_ADD_CONFIRM):
+                        logger.warning('No skill selected for 10s, panel still open, click a random buff')
+                        self.click_random_buff()
+                        break
+                    logger.warning('Skill selection panel closed unexpectedly, exit')
+                    break
+
+                if self.appear_then_click(self.I_BCMJ_SKILL_ADD1, interval=1):
+                    break
+                if self.appear_then_click(self.I_BCMJ_SKILL_ADD2, interval=1):
+                    break
+                if self.appear_then_click(self.I_BCMJ_BLESS, interval=1):
+                    break
+                if self.appear_then_click(
+                        self.I_BCMJ_PROPERTY_ADD_CRITICAL, interval=1
+                ):
+                    break
+                if self.appear_then_click(
+                        self.I_BCMJ__DEFALUT_ATTRIBUTE, interval=1
+                ):
+                    break
+            if self.appear_then_click(self.I_BCMJ_SKILL_ADD_CONFIRM, interval=1):
+                return True
+        return False
 
     def hero2_skill_wait(self):
+        if not self.appear(self.I_BCMJ_SKILL_ADD_CONFIRM):
+            return False
         # pve技能列表, 按优先级顺序
         pve_skill = [
             self.I_HERO2_SKILL1,  # 同调祝福
@@ -138,22 +165,34 @@ class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
             self.I_HERO2_SKILL5,  # 敛神祝福
             self.I_HERO2_SKILL6,  # 速度祝福
         ]
-        pvp_skill = [
-            self.I_HERO2_SKILL7,  # 遏云祝福
-            self.I_HERO2_SKILL8,  # 音迹祝福
-            self.I_HERO2_SKILL9,  # 泛音祝福
-            self.I_HERO2_SKILL10,  # 凝啸祝福
-            self.I_HERO2_SKILL11,  # 逐空祝福
-            self.I_HERO2_SKILL12,  # 伤害加成
-        ]
+        # TODO: PVP
+        pvp_skill = []
         target_skill_dict: dict[SkillMode, list] = {
             SkillMode.PVE: pve_skill,
             SkillMode.PVP: pvp_skill,
         }
         target_skills = target_skill_dict[self.conf.herotest.skill_mode]
-        if any(self.appear_then_click(ts, interval=1) for ts in target_skills):
-            pass
-        return self.appear_then_click(self.I_BCMJ_SKILL_ADD_CONFIRM, interval=1.5)
+        timer = Timer(10).start()
+        while True:
+            self.screenshot()
+            if timer.reached_and_reset():
+                if self.appear(self.I_BCMJ_SKILL_ADD_CONFIRM):
+                    logger.warning('No skill selected for 10s, panel still open, click a random buff')
+                    self.click_random_buff()
+                    break
+                logger.warning('Skill selection panel closed unexpectedly, exit')
+                break
+            if any(self.appear_then_click(ts, interval=1) for ts in target_skills):
+                break
+        self.ui_click_until_disappear(self.I_BCMJ_SKILL_ADD_CONFIRM, interval=1.5)
+        return True
+
+    def click_random_buff(self):
+        """兜底: 4个buff都未匹配到目标时, 随机点击一个槽位, 避免卡死"""
+        logger.warning('No target buff matched, click a random buff')
+        slot = random.choice([(60, 320, 200, 140), (380, 320, 200, 140),
+                              (700, 320, 200, 140), (1020, 320, 200, 140)])
+        self.click(RuleClick(roi_front=slot, roi_back=slot, name='buff_random'), interval=1)
 
     def switch_hero(self, layer: Layer):
         """切换英杰"""
@@ -197,7 +236,6 @@ class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
             logger.info("Art war card is enough")
             return True
         cu = self.O_ART_WAR_CARD_PLUS.ocr(image=self.device.image)
-        cu = 0 if cu == '' else int(cu)
         if cu >= 1:
             logger.info("Art war card is not enough, but plus card is enough")
             return True
@@ -264,34 +302,35 @@ class ScriptTask(GameUi, GeneralBattle, HeroTestAssets, SwitchSoul):
 
     def init_pages(self):
         """初始化页面"""
-        page_hero_test = self.navigator.resolve_page(pages.page_hero_test)
-        if page_hero_test is None:
-            raise RuntimeError("HeroTest 页面 session 初始化失败")
-
+        # 运行时改链只能改 session 页面副本: navigator bootstrap 时已把全局页面深拷贝了一份,
+        # 之后对 pages.* 的修改 session 看不到, _build_path 会找不到边而返回 None
+        hero_test_page = self.navigator.resolve_page(pages.page_hero_test)
+        if hero_test_page is None:
+            raise RuntimeError(f'Resolve session page failed: {pages.page_hero_test.key}')
         match self.conf.herotest.layer:
             case Layer.YANWU:
                 self.page_hero_mode = self.navigator.add_page(
                     pages.Page(self.I_CHECK_HERO1_EXP, key="page_hero_mode", name="page_hero_mode", register=False)
                 )
-                page_hero_test.connect(self.page_hero_mode, self.I_GBB, key="page_hero_test->page_hero_mode")
+                hero_test_page.connect(self.page_hero_mode, self.I_GBB, key="page_hero_test->page_hero_mode")
             case Layer.MIJING:
                 self.page_hero_mode = self.navigator.add_page(
                     pages.Page(self.I_CHECK_HERO1_SKILL, key="page_hero_mode", name="page_hero_mode", register=False)
                 )
-                page_hero_test.connect(self.page_hero_mode, self.I_BCMJ, key="page_hero_test->page_hero_mode")
+                hero_test_page.connect(self.page_hero_mode, self.I_BCMJ, key="page_hero_test->page_hero_mode")
             case Layer.CHUANCHENG:
                 self.page_hero_mode = self.navigator.add_page(
                     pages.Page(self.I_CHECK_HERO2_EXP, key="page_hero_mode", name="page_hero_mode", register=False)
                 )
-                page_hero_test.connect(self.page_hero_mode, self.I_ENTER_CCSL, key="page_hero_test->page_hero_mode")
+                hero_test_page.connect(self.page_hero_mode, self.I_ENTER_CCSL, key="page_hero_test->page_hero_mode")
             case Layer.MENGXU:
                 self.page_hero_mode = self.navigator.add_page(
                     pages.Page(self.I_CHECK_HERO2_SKILL, key="page_hero_mode", name="page_hero_mode", register=False)
                 )
-                page_hero_test.connect(self.page_hero_mode, self.I_ENTER_MXMJ, key="page_hero_test->page_hero_mode")
+                hero_test_page.connect(self.page_hero_mode, self.I_ENTER_MXMJ, key="page_hero_test->page_hero_mode")
             case _:
                 raise ValueError(f'Unknown Layer {Layer}')
-        self.page_hero_mode.connect(page_hero_test, self.I_UI_BACK_YELLOW, key="page_hero_mode->page_hero_test")
+        self.page_hero_mode.connect(hero_test_page, self.I_BACK_YOLLOW, key="page_hero_mode->page_hero_test")
 
 
 if __name__ == "__main__":
@@ -302,4 +341,4 @@ if __name__ == "__main__":
     d = Device(c)
     t = ScriptTask(c, d)
 
-    t.check_and_lock_team()
+    t.run()

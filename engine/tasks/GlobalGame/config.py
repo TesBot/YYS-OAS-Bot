@@ -2,12 +2,11 @@
 # @author runhey
 # github https://github.com/runhey
 from enum import Enum
-
 from pydantic import BaseModel, Field
 
 from tasks.GlobalGame.config_emergency import Emergency
+from tasks.Component.config_base import ConfigBase
 from tasks.Component.Costume.config import CostumeConfig
-
 
 class Transport(str, Enum):
     TCP = 'TCP'
@@ -24,35 +23,8 @@ class TeamFlow(BaseModel):
     password: str = Field(default='', description='password_help')
 
 
-class BattleTaskOverEnum(str, Enum):
-    FINISH = 'finish'
-    EXIT = 'exit'
-
-
-class BattleTakeover(BaseModel):
-    battle_timeout: int = Field(default=420, description='battle_timeout_global_help', ge=1)
-    on_takeover: BattleTaskOverEnum = Field(default=BattleTaskOverEnum.FINISH, description='on_takeover_help')
-
-
-class OcrLog(BaseModel):
-    save_ocr_log: bool = Field(default=False, description='save_ocr_log_help')
-
-
-class WantedAssistAnswer(str, Enum):
-    """How to answer a friend's 「协助悬赏封印」 invite."""
-    REJECT = 'reject'
-    ACCEPT = 'accept'
-
-
-class PopupPolicy(BaseModel):
-    wanted_assist: WantedAssistAnswer = Field(
-        default=WantedAssistAnswer.REJECT, description='wanted_assist_help')
-
-
 class GlobalGame(BaseModel):
     emergency: Emergency = Field(default_factory=Emergency)
     costume_config: CostumeConfig = Field(default_factory=CostumeConfig)
-    battle: BattleTakeover = Field(default_factory=BattleTakeover)
-    ocr: OcrLog = Field(default_factory=OcrLog)
     team_flow: TeamFlow = Field(default_factory=TeamFlow)
-    popup: PopupPolicy = Field(default_factory=PopupPolicy)
+

@@ -3,11 +3,12 @@
 # github https://github.com/runhey
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
-from tasks.Component.GeneralBattle.config_general_battle import GeneralBattleConfig
+from datetime import datetime, time
 
 from tasks.Component.config_scheduler import Scheduler
-from tasks.Component.config_base import ConfigBase, DateTime, TimeDelta, Time, dynamic_hide
-from tasks.Component.GeneralInvite.config_invite import FindMode, InviteConfig
+from tasks.Component.config_base import ConfigBase, DateTime, TimeDelta, Time
+from tasks.BondlingFairyland.config_battle import BattleConfig
+from tasks.Component.GeneralInvite.config_invite import InviteConfig
 
 
 class BondlingMode(str, Enum):
@@ -65,10 +66,6 @@ class BondlingConfig(ConfigBase):
                                                                     '注:探查耗费的时间与次数也计入总时间和次数中')
     check_enable: bool = Field(default=True, description='是否检查契忆数量')
     limit_num: int = Field(default=2000, description='契忆数量限制,到达此限制将自动结束任务(仅在任务开始时判断)')
-    random_sleep: bool = Field(
-        default=False,
-        description='bondling_random_sleep_help',
-    )
 
     @field_validator("bondling_mode", mode="before")
     def convert_old_value(cls, v):
@@ -106,10 +103,6 @@ class BondlingSwitchSoul(ConfigBase):
         if group.isdigit() and team.isdigit():
             return 'int', (int(group), int(team))
         return 'str', (group, team)
-
-
-class BattleConfig(GeneralBattleConfig):
-    battle_hide_fields = dynamic_hide('lock_team_enable', 'preset_enable', 'preset_group', 'preset_team')
 
 
 class BondlingFairyland(ConfigBase):

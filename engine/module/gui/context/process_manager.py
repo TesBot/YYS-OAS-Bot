@@ -36,26 +36,15 @@ def is_port_in_use(ip, port) -> bool:
     :param port:
     :return:
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        try:
-            s.connect((ip, port))
-        except OSError:
-            logger.info(f'Port {port} is not in use')
-            return False
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.connect((ip, port))
+        s.shutdown(2)
         logger.info(f'Port {port} is in use')
         return True
-
-
-def find_available_port(ip, reserved_ports) -> int:
-    """Probe each unreserved candidate once, then fail if the pool is exhausted."""
-    reserved_ports = set(reserved_ports)
-    candidates = [port for port in range(40000, 40201) if port not in reserved_ports]
-    random.shuffle(candidates)
-    for port in candidates:
-        if not is_port_in_use(ip, port):
-            return port
-    raise RuntimeError('No available script port in range 40000-40200 (all busy or reserved)')
+    except:
+        logger.info(f'Port {port} is not in use')
+        return False
 
 
 
@@ -111,7 +100,9 @@ class ProcessManager(QObject):
         """
         if config not in self.processes:
             # 初始化端口
-            port = find_available_port('127.0.0.1', self.ports.values())
+            port = 40000 + random.randint(0, 200)
+            while is_port_in_use('127.0.0.1', port):
+                port = 40000 + random.randint(0, 200)
             self.ports[config] = port
             # 初始化日志队列
             q = self.start_log(config)

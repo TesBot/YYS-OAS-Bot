@@ -1,6 +1,9 @@
 import datetime
 import subprocess
-from typing import Tuple
+import threading
+import time
+import requests
+from typing import Generator, List, Tuple
 
 from deploy.config import ExecutionError
 from deploy.git import GitManager
@@ -9,14 +12,6 @@ from deploy.utils import DEPLOY_CONFIG
 from module.logger import logger
 from module.base.retry import retry
 from module.server.config import DeployConfig
-from deploy.package_release import (
-    PACKAGE_ROOT, has_own_git_repository, is_fixed_package, read_package_release,
-)
-
-
-DEFAULT_GIT_TIMEOUT = 5
-DEFAULT_FETCH_TIMEOUT = 15
-FETCH_RETRY = 2
 
 
 class Updater(DeployConfig, GitManager, PipManager):
@@ -38,38 +33,12 @@ class Updater(DeployConfig, GitManager, PipManager):
         else:
             return None
 
-    def execute_command(self, command, timeout=DEFAULT_GIT_TIMEOUT) -> subprocess.CompletedProcess | None:
-        if is_fixed_package() or not has_own_git_repository(self.git):
-            logger.warning('Git updates require an OAS repository in the OAS root')
-            return None
+    def execute_output(self, command) -> str:
         command = command.replace(r"\\", "/").replace("\\", "/").replace('"', '"')
-        try:
-            return subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf8",
-                errors="replace",
-                shell=True,
-                cwd=PACKAGE_ROOT,
-                timeout=timeout,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Git command timeout after {timeout}s: {command}")
-            return None
-        except OSError as e:
-            logger.warning(f"Git command failed: {command}, error: {e}")
-            return None
-
-    def execute_output(self, command, timeout=DEFAULT_GIT_TIMEOUT) -> str:
-        result = self.execute_command(command, timeout=timeout)
-        if result is None:
-            return ""
-        if result.returncode:
-            logger.warning(f"Git command failed: {command}, stderr: {result.stderr.strip()}")
-            return ""
-        return result.stdout
+        log = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf8", shell=True
+        ).stdout
+        return log
 
     def get_commit(self, revision="", n=1, short_sha1=False) -> Tuple:
         """
@@ -79,11 +48,11 @@ class Updater(DeployConfig, GitManager, PipManager):
         ph = "h" if short_sha1 else "H"
 
         log = self.execute_output(
-            f'"{self.git}" --no-pager log {revision} --pretty=format:"%{ph}---%an---%ad---%s" --date=iso -{n}'
+            f'"{self.git}" log {revision} --pretty=format:"%{ph}---%an---%ad---%s" --date=iso -{n}'
         )
 
         if not log:
-            return ('unknown', 'unknown', '', '未找到当前 OAS 目录的 Git 仓库') if n == 1 else []
+            return None, None, None, None
 
         logs = log.split("\n")
         logs = list(map(lambda log: tuple(log.split("---")), logs))
@@ -94,114 +63,62 @@ class Updater(DeployConfig, GitManager, PipManager):
             return logs
 
     def current_branch(self) -> str:
-        if is_fixed_package():
-            return read_package_release()['branch']
         return self.Branch
 
     def current_commit(self) -> str:
-        if is_fixed_package():
-            return self.get_update_info()['current_commit']
         return self.get_commit()
 
     def latest_commit(self) -> str:
-        if is_fixed_package():
-            return self.get_update_info()['latest_commit']
         source = "origin"
         return self.get_commit(f"{source}/{self.Branch}")
 
-    def fetch_remote(self) -> bool:
-        if is_fixed_package():
-            logger.info('Fixed deployment package: Git fetch is disabled')
-            return False
-        if not self.AutoUpdate:
-            logger.info("AutoUpdate is disabled, skip git fetch")
-            return False
+    def check_update(self) -> bool:
+        self.state = "checking"
+
+        # if State.deploy_config.GitOverCdn:
+        #     status = self.goc_client.get_status()
+        #     if status == "uptodate":
+        #         logger.info(f"No update")
+        #         return False
+        #     elif status == "behind":
+        #         logger.info(f"New update available")
+        #         return True
+        #     else:
+        #         # failed, should fallback to `git pull`
+        #         pass
 
         source = "origin"
-        for _ in range(FETCH_RETRY):
-            result = self.execute_command(
-                f'"{self.git}" fetch {source} {self.Branch}',
-                timeout=DEFAULT_FETCH_TIMEOUT,
-            )
-            if result is not None and result.returncode == 0:
-                return True
-            if result is not None:
-                logger.warning(f"Git fetch failed: {result.stderr.strip()}")
+        for _ in range(3):
+            if self.execute(
+                    f'"{self.git}" fetch {source} {self.Branch}', allow_failure=True
+            ):
+                break
+        else:
+            logger.warning("Git fetch failed")
+            return False
 
-        logger.warning("Git fetch failed")
-        return False
-
-    def revision_distance(self, left: str, right: str) -> tuple[int, int] | None:
         log = self.execute_output(
-            f'"{self.git}" rev-list --left-right --count {left}...{right}'
+            f'"{self.git}" log --not --remotes={source}/* -1 --oneline'
         )
-        if not log:
-            return None
+        if log:
+            logger.info(
+                f"Cannot find local commit {log.split()[0]} in upstream, skip update"
+            )
+            return False
 
-        try:
-            ahead, behind = log.split()
-            return int(ahead), int(behind)
-        except ValueError:
-            logger.warning(f"Unexpected git rev-list output: {log.strip()}")
-            return None
+        sha1, _, _, message = self.get_commit(f"..{source}/{self.Branch}")
 
-    def get_update_info(self) -> dict:
-        if is_fixed_package():
-            try:
-                release = read_package_release()
-                commit = (
-                    release['commit'], release['repository'], release['built_at'],
-                    '固定部署包 ' + release['release'] + '（离线版本；不查询远程仓库）',
-                )
-                branch = release['branch']
-                repository = release['repository']
-                error = ''
-            except (OSError, ValueError) as exc:
-                logger.error(f'Invalid fixed package manifest: {exc}')
-                commit = ('unknown', 'unknown', '', '固定部署包版本清单无效，请重新解压完整部署包')
-                branch, repository, error = '', '', str(exc)
-            # Keep all existing OASX fields as arrays of strings, never null.
-            return {
-                'is_update': False, 'branch': branch, 'current_commit': commit,
-                'latest_commit': commit, 'commit': [commit],
-                'repository': repository, 'update_mode': 'fixed-package',
-                'remote_checked': False, 'error': error,
-            }
-        is_update = False
-        source = "origin"
-        remote_revision = f"{source}/{self.Branch}"
-
-        if self.fetch_remote():
-            distance = self.revision_distance("HEAD", remote_revision)
-            if distance is None:
-                is_update = False
-            else:
-                ahead, behind = distance
-                is_update = not ahead and bool(behind)
-                if ahead:
-                    logger.info("Local branch has commits not in upstream, skip update")
-                logger.info("New update available" if is_update else "No update")
-
-        commits = self.get_commit(remote_revision, n=15)
-        latest_commit = commits[0] if commits and isinstance(commits, list) else commits
-        return {
-            'is_update': is_update,
-            'branch': self.current_branch(),
-            'current_commit': self.current_commit(),
-            'latest_commit': latest_commit,
-            'commit': commits,
-        }
+        if sha1:
+            logger.info(f"New update available")
+            logger.info(f"{sha1[:8]} - {message}")
+            return True
+        else:
+            logger.info(f"No update")
+            return False
 
     def execute_pull(self) -> bool:
-        if is_fixed_package() or not has_own_git_repository(self.git):
-            logger.info('Fixed package or missing local OAS Git repository: pull is disabled')
-            return False
-        if not self.AutoUpdate:
-            logger.info("AutoUpdate is disabled, skip git pull")
-            return False
-
         source = "origin"
-        for _ in range(FETCH_RETRY):
+        for _ in range(3):
             if self.execute(
                     f'"{self.git}" pull {source} {self.Branch} --no-rebase', allow_failure=True
             ):
@@ -211,6 +128,10 @@ class Updater(DeployConfig, GitManager, PipManager):
             return False
 
 
+
 if __name__ == "__main__":
     updater = Updater()
     print(updater.latest_commit())
+
+
+

@@ -45,13 +45,22 @@ class AreaBossAssets:
 	C_AB_JI_FLOOR_SELECTED = RuleClick(roi_front=(380,120,70,30), roi_back=(380,120,70,30), name="ab_ji_floor_selected")
 
 
+	# Swipe Rule Assets
+	# 筛选列表 手指向上滑动 
+	S_AB_FILTER_UP = RuleSwipe(roi_front=(920,680,10,10), roi_back=(1130,230,10,10), mode="default", name="ab_filter_up")
+	# 筛选列表 手指向下滑动 
+	S_AB_FILTER_DOWN = RuleSwipe(roi_front=(1130,230,10,10), roi_back=(920,680,10,10), mode="default", name="ab_filter_down")
+	# 极地鬼 层数列表 手指向下滑动  
+	S_AB_FLOOR_DOWN = RuleSwipe(roi_front=(390,260,10,10), roi_back=(450,500,10,10), mode="default", name="ab_floor_down")
+	# 普通地鬼 等级滑轨 手指向右滑动  
+	S_AB_LEVEL_RIGHT = RuleSwipe(roi_front=(0,0,10,10), roi_back=(570,270,10,10), mode="default", name="ab_level_right")
+
+
 	# Image Rule Assets
 	# 探索图标 
 	I_EXPLORE = RuleImage(roi_front=(758,122,66,77), roi_back=(339,104,836,120), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/res_explore.png")
 	# 地狱鬼王图标 
 	I_AREA_BOSS = RuleImage(roi_front=(639,636,65,68), roi_back=(606,619,145,100), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/res_area_boss.png")
-	# 蓝色的返回 
-	I_BACK_BLUE = RuleImage(roi_front=(51,30,51,52), roi_back=(4,1,128,110), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/res_back_blue.png")
 	# 右上边选中鬼王的 
 	I_FILTER = RuleImage(roi_front=(1116,33,35,31), roi_back=(1076,19,98,78), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/res_filter.png")
 	# 除悬赏外 选中第一个鬼王的 
@@ -80,12 +89,8 @@ class AreaBossAssets:
 	I_AB_DIFFICULTY_NORMAL = RuleImage(roi_front=(260,100,70,70), roi_back=(260,100,70,70), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/ab_difficulty_normal.png")
 	# 普通地鬼 更改等级 的把手 
 	I_AB_LEVEL_HANDLE = RuleImage(roi_front=(170,250,400,75), roi_back=(170,250,400,75), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/ab_level_handle.png")
-	# 普通地鬼 等级为60 标志
+	# 普通地鬼 等级为60 标志 
 	I_AB_LEVEL_60 = RuleImage(roi_front=(300,160,110,100), roi_back=(300,160,110,100), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/ab_level_60.png")
-	# 地域鬼王团体战胜利结算屏标识（金色"胜利"扇面）。
-	# 鬼王战斗为特殊团体战界面，通用 gb_win 等素材全部失配（实测最高 0.438 < 0.8），
-	# 该模板从真实失败截图裁剪：胜利屏匹配 0.938~1.0，庭院等无关界面 0.44 以下。
-	I_AB_BATTLE_WIN = RuleImage(roi_front=(470,100,280,150), roi_back=(200,0,700,400), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/res_ab_battle_win.png")
 	# 极地鬼 层数列表打开 标志 
 	I_AB_JI_FLOOR_LIST_CHECK = RuleImage(roi_front=(390,150,60,290), roi_back=(390,150,60,290), threshold=0.8, method="Template matching", file="./tasks/AreaBoss/res/ab_ji_floor_list_check.png")
 	# 极地鬼 一层 
@@ -111,16 +116,7 @@ class AreaBossAssets:
 	O_AB_NUM_OF_CHALLENGE = RuleOcr(roi=(270,630,150,36), area=(270,630,150,36), mode="Digit", method="Default", keyword="", name="ab_num_of_challenge")
 	# 地鬼名字 
 	O_AB_BOSS_NAME = RuleOcr(roi=(114,36,248,69), area=(114,36,248,69), mode="Full", method="Default", keyword="", name="ab_boss_name")
-
-
-	# Swipe Rule Assets
-	# 筛选列表 手指向上滑动 
-	S_AB_FILTER_UP = RuleSwipe(roi_front=(920,680,10,10), roi_back=(1130,230,10,10), mode="default", name="ab_filter_up")
-	# 筛选列表 手指向下滑动 
-	S_AB_FILTER_DOWN = RuleSwipe(roi_front=(1130,230,10,10), roi_back=(920,680,10,10), mode="default", name="ab_filter_down")
-	# 极地鬼 层数列表 手指向下滑动  
-	S_AB_FLOOR_DOWN = RuleSwipe(roi_front=(390,260,10,10), roi_back=(450,500,10,10), mode="default", name="ab_floor_down")
-	# 普通地鬼 等级滑轨 手指向右滑动  
-	S_AB_LEVEL_RIGHT = RuleSwipe(roi_front=(0,0,10,10), roi_back=(570,270,10,10), mode="default", name="ab_level_right")
+	# 声望值 
+	O_AB_REPUTATION = RuleOcr(roi=(1180,61,82,32), area=(1180,61,82,32), mode="Digit", method="Default", keyword="", name="ab_reputation")
 
 

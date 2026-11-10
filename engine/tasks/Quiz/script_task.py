@@ -4,7 +4,6 @@
 import random
 import time
 from cached_property import cached_property
-from tasks.ActivityShikigami.page import page_act
 
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import page_realm_raid, page_main
@@ -70,11 +69,12 @@ class ScriptTask(GameUi, QuizAssets, ActivityShikigamiAssets, Debugger):
         raise TaskEnd('Quiz')
 
     def enter(self):
-        self.goto_page(page_act)
-        while True:
+        while 1:
             self.screenshot()
             if self.appear(self.I_START):
                 break
+            if self.appear_then_click(self.I_SHI, interval=1):
+                continue
             if self.appear_then_click(self.I_ENTRY, interval=1):
                 continue
         logger.info('Quiz start')
@@ -151,7 +151,7 @@ class ScriptTask(GameUi, QuizAssets, ActivityShikigamiAssets, Debugger):
         
         if countdown < 2 or countdown > 5:
             # 最后两秒钟的时候 进行选择
-            if countdown > 100:
+            if countdown >100:
                 self.runalone = True
             else:
                 return False
@@ -202,8 +202,7 @@ class ScriptTask(GameUi, QuizAssets, ActivityShikigamiAssets, Debugger):
         answer_1 = remove_symbols(self.O_ANSWER1.ocr(self.device.image))
         answer_2 = remove_symbols(self.O_ANSWER2.ocr(self.device.image))
         answer_3 = remove_symbols(self.O_ANSWER3.ocr(self.device.image))
-        answer_4 = remove_symbols(self.O_ANSWER4.ocr(self.device.image))
-        
+        answer_4 = remove_symbols(self.O_ANSWER4.ocr(self.device.image))  
         for result in results:
             # box 是四个点坐标 左上， 右上， 右下， 左下
             # x1, y1, x2, y2 = result.box[0][0], result.box[0][1], result.box[2][0], result.box[2][1]
@@ -227,4 +226,3 @@ if __name__ == '__main__':
     t.screenshot()
 
     t.run()
-

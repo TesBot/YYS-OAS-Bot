@@ -11,9 +11,8 @@ from tasks.Utils.config_enum import ShikigamiClass
 from tasks.Component.ReplaceShikigami.assets import ReplaceShikigamiAssets
 import time
 from module.exception import GameStuckError
-
-
 class ReplaceShikigami(BaseTask, ReplaceShikigamiAssets):
+
 
     def in_shikigami_growth(self, screenshot=False) -> bool:
         # 判定是否在式神育成界面
@@ -49,13 +48,19 @@ class ReplaceShikigami(BaseTask, ReplaceShikigamiAssets):
         # 选择式神的种类
         while 1:
             self.screenshot()
-            if self.appear(check_selected, interval=1):
+
+            if self.appear(check_selected):
                 break
-            if self.appear(check_click, interval=3):
-                if self.wait_until_pos_stable(check_click, stable_time=0.8, timeout=2.5):
-                    self.click(check_click)
+            if self.appear(check_click, interval=1):
+                if not (self.wait_until_pos_stable(check_click, stable_time=1.5, timeout=3.5)
+                        and self.appear(check_click)):
+                    continue
+                if self.appear(check_selected):
+                    break
+                self.click(check_click, interval=2)
                 continue
-            if self.appear_then_click(self.I_RS_ALL_SELECTED, interval=5):
+            self.wait_animate_stable(rule=self.C_SHIKIGAMI_SWITCH_1, interval=0.8)
+            if self.click(self.C_SHIKIGAMI_SWITCH_1, interval=3.5):
                 continue
         logger.info('Select shikigami class: %s' % shikigami_class)
 
@@ -102,12 +107,19 @@ class ReplaceShikigami(BaseTask, ReplaceShikigamiAssets):
             # 恢复点击操作
             if click_interval_timer.reached_and_reset():
                 clicked = False
+            
             self.screenshot()
+
+            if not self.appear(stop_image):
+                break
+
             if self.appear_then_click(self.I_U_CONFIRM_SMALL, interval=0.5):
                 clicked = False  # 点击了确认, 恢复选式神的操作
                 continue
-            if not self.appear(stop_image):
-                break
+
+            # 是否育成候补式神按钮
+            if self.appear_then_click(self.I_UI_CONFIRM, interval=1) or self.appear_then_click(self.I_UI_CONFIRM_SAMLL, interval=1):
+                continue
             # 与下方点击第7个式神操作互斥, 防止确认按钮还没有出现被下方取消掉
             if not clicked and self.click(click_match, interval=1.5):
                 clicked = True
@@ -132,13 +144,3 @@ class ReplaceShikigami(BaseTask, ReplaceShikigamiAssets):
                 or self.appear(self.I_DETECT_EMPTY_6):
             return True
         return False
-
-
-if __name__ == '__main__':
-    from module.config.config import Config
-    from module.device.device import Device
-
-    c = Config('日常2')
-    d = Device(c)
-    t = ReplaceShikigami(c, d)
-    t.switch_shikigami_class(ShikigamiClass.N)

@@ -7,20 +7,20 @@ import random
 
 from tasks.Component.SwitchSoul.switch_soul import SwitchSoul
 from tasks.RyouToppa.assets import RyouToppaAssets
-from tasks.RyouToppa.page_recognition import is_ryou_toppa_page, is_ryou_toppa_context
 from tasks.Component.GeneralBattle.general_battle import GeneralBattle
 from tasks.Component.config_base import ConfigBase, Time
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import page_realm_raid, page_main, page_kekkai_toppa, page_shikigami_records
 from tasks.RealmRaid.assets import RealmRaidAssets
+from tasks.Component.GeneralBattle.battle_wait import battle_wait_strategy
 
 from module.logger import logger
 from module.exception import TaskEnd
 from module.atom.image_grid import ImageGrid
-from module.atom.ocr import RuleOcr
-from module.base.timer import Timer
 from module.base.utils import point2str
-from module.exception import GamePageUnknownError, TaskRecoveryFailed
+from module.base.timer import Timer
+from module.exception import GamePageUnknownError
+
 
 
 area_map = (
@@ -66,41 +66,16 @@ area_map = (
     }
 )
 
-TOPPA_CLICK_FAILURE_LIMIT = 4
-TOPPA_POPUP_WAIT_TIMEOUT = 3.0
-# 点「挑战」到真正进入战斗的等待上限。
-# 历史实测快则 1.4s、慢则 2.7s（见 10-05 日志多次 RES_FIRE -> GENERAL BATTLE START）。
-# 原值 5.0 在结界突破高峰期不够：10-06 13:55:47 实测先判定「未进入战斗」，
-# 50 毫秒后战斗才真正开始（GENERAL BATTLE START -> page_battle_prepare），
-# 于是关闭浮窗与战斗启动撞在一起，脚本随后整个崩溃重启。
-# 判定失败前另有一次 is_in_battle 复核（见 _skip_unavailable_area），
-# 这里放宽到 12s 覆盖高峰期抖动，代价只是真失败时多等几秒。
-TOPPA_BATTLE_WAIT_TIMEOUT = 12.0
-
 
 def random_delay(min_value: float = 1.0, max_value: float = 2.0, decimal: int = 1):
     """
     生成一个指定范围内的随机小数
     """
     random_float_in_range = random.uniform(min_value, max_value)
-    return round(random_float_in_range, decimal)
-
+    return (round(random_float_in_range, decimal))
 
 class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
     medal_grid: ImageGrid = None
-
-    def _ensure_ryou_toppa_page(self):
-        """每次点击挑战目标前重新识别；返回恢复后先导航回寮突破。"""
-        self.screenshot()
-        if is_ryou_toppa_page(self) or self._ryou_raid_complete():
-            return
-        current = self.get_current_page(skip_first_screenshot=True, fallback=True)
-        logger.warning(f'RyouToppa page changed to {current}; navigating back')
-        self.goto_page(page_kekkai_toppa)
-        self.screenshot()
-        if not (is_ryou_toppa_page(self) or self._ryou_raid_complete()):
-            raise GamePageUnknownError('寮突破页面特征未确认，停止点击挑战区域')
-        self.device.click_record_clear()
 
     def run(self):
         """
@@ -134,8 +109,7 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
                 if self.appear_then_click(self.I_RYOU_TOPPA, interval=1):
                     continue
             # 攻破阴阳寮，说明寮突已开，则退出
-            elif self._ryou_raid_complete():
-                self._ui_verify(self._ryou_raid_complete, [])
+            elif self.appear(self.I_SUCCESS_PENETRATION, threshold=0.8):
                 ryou_toppa_start_flag = True
                 ryou_toppa_success_penetration = True
                 break
@@ -163,9 +137,7 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
                 self.start_ryou_toppa()
             else:
                 logger.info("The ryou toppa is not open and you are a ryou member.")
-                # A verified unopened guild raid is unavailable for this run.
-                # Wait for the next scheduled check without blocking other tasks.
-                self.set_next_run(task='RyouToppa', finish=True, server=True, success=True)
+                self.set_next_run(task='RyouToppa', finish=True, server=True, success=False)
                 raise TaskEnd
 
         # 100% 攻破, 第二天再执行
@@ -183,16 +155,16 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
         # 开始突破
         # --------------------------------------------------------------------------------------------------------------
         area_index = 0
+        success = True
         while 1:
+            self.screenshot()
+            if not self.appear(self.I_TOPPA_RECORD, threshold=0.6):
+                continue
             # 设置长任务标志,用来寻找寮突可进攻的目标
             self.device.stuck_record_add('PREPARE_BEFORE_BATTLE')
-            self._ensure_ryou_toppa_page()
-            if self._ryou_raid_complete():
-                self._ui_verify(self._ryou_raid_complete, [])
-                self.plan_tomorrow_ryoutoppa()
-                raise TaskEnd
             if not self.has_ticket():
-                logger.info('No attack chances left; finish this run and wait for the configured interval.')
+                logger.info("We have no chance to attack. Try again after 1 hour.")
+                success = False
                 break
             if self.current_count >= ryou_config.raid_config.limit_count:
                 logger.warning("We have attacked the limit count.")
@@ -206,13 +178,18 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
             if not res:
                 area_index += 1
                 if area_index >= len(area_map):
-                    self._finish_no_attackable_targets()
+                    logger.warning('All areas are not available, it will flush the area cache')
+                    area_index = 0
+                    self.flush_area_cache()
                 continue
 
+
+        # 回 page_main
         self.goto_page(page_main)
-        # Ticket exhaustion and configured limits are verified stopping
-        # conditions. Real navigation/battle failures still propagate normally.
-        self.set_next_run(task='RyouToppa', finish=True, server=True, success=True)
+        if success:
+            self.set_next_run(task='RyouToppa', finish=True, server=True, success=True)
+        else:
+            self.set_next_run(task='RyouToppa', finish=True, server=True, success=False)
         raise TaskEnd
 
     def plan_tomorrow_ryoutoppa(self):
@@ -224,10 +201,6 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
         # 如果时间在05:00-23:59之间则设定时间为明天的自定义时间
         else:
             self.custom_next_run(task='RyouToppa', custom_time=self.config.ryou_toppa.raid_config.next_ryoutoppa_time, time_delta=1)
-        # Preserve the explicit daily time while declaring the completed run.
-        outcomes = getattr(self.config, '_learning_task_outcomes', None)
-        if outcomes is not None:
-            outcomes['ryou_toppa'] = True
 
     def start_ryou_toppa(self):
         """
@@ -263,13 +236,14 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
         如果没有票了，那么就返回False
         :return:
         """
-        # Always inspect the visible count, including the night period.
-        # A verified 0/6 means there are no remaining defeats for this run.
+        # 21点后、次日5点前无限进攻机会
+        if datetime.now().hour >= 21 or datetime.now().hour <= 5:
+            return True
         self.wait_until_appear(self.I_TOPPA_RECORD)
         self.screenshot()
         cu, res, total = self.O_NUMBER.ocr(self.device.image)
-        if cu == 0 and total > 0 and cu + res == total:
-            logger.info('RyouToppa remaining defeat count is zero; this run is complete.')
+        if cu == 0 and cu + res == total:
+            logger.warning(f'Execute round failed, no ticket')
             return False
         return True
 
@@ -279,82 +253,19 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
         :return:
         """
         f1, f2 = area_map[index].get("fail_sign")
+        f3, f4 = area_map[index].get("finished_sign")
         self.screenshot()
-        # 只有整个阴阳寮已攻破才结束本轮；一个已攻破的目标只换下一个。
-        if self._ryou_raid_complete():
-            self._ui_verify(self._ryou_raid_complete, [])
+        # 如果该区域已经被攻破则退出
+        # Ps: 这时候能打过的都打过了，没有能攻打的结界了, 代表任务已经完成，set_next_run time=1d
+        if self.appear(f3, threshold=0.8) or self.appear(f4, threshold=0.8):
+            logger.info('RyouToppa has tried to attack')
             self.plan_tomorrow_ryoutoppa()
             raise TaskEnd
-        if self._area_finished(index):
-            self._ui_verify(lambda: (not self.appear(RealmRaidAssets.I_FIRE, threshold=0.8)
-                                    and (self._ryou_raid_complete()
-                                         or (is_ryou_toppa_page(self) and self._area_finished(index)))), [])
-            if self._ryou_raid_complete():
-                self._ui_verify(self._ryou_raid_complete, [])
-                self.plan_tomorrow_ryoutoppa()
-                raise TaskEnd
-            logger.info(f'Area [{index + 1}] is already broken; select another target')
-            return False
         # 如果该区域攻略失败返回 False
         if self.appear(f1, threshold=0.8) or self.appear(f2, threshold=0.8):
             logger.info('Area [%s] is futile attack, skip.' % str(index + 1))
             return False
         return True
-
-    def _ryou_raid_complete(self):
-        """Use the global progress status, never an individual target's broken stamp."""
-        if self.appear(self.I_SUCCESS_PENETRATION, threshold=0.8):
-            return True
-        if not is_ryou_toppa_context(self):
-            return False
-        roi = (130, 365, 250, 65)
-        notice = RuleOcr(roi=roi, area=roi, mode='Full', method='Default',
-                         keyword='', name='ryou_raid_complete')
-        notice.score = 0.8
-        completed = {'100%', '100.0%', '100.00%', '已攻破', '攻破完成',
-                     '阴阳寮已攻破'}
-        return any(''.join(result.ocr_text.split()).strip('！!。.').replace('％', '%') in completed
-                   for result in notice.detect_and_ocr(self.device.image))
-
-    def _area_finished(self, index):
-        f3, f4 = area_map[index]['finished_sign']
-        if self.appear(f3, threshold=0.8) or self.appear(f4, threshold=0.8):
-            return True
-        image = self.device.image
-        if image is None or len(image.shape) < 2:
-            return False
-        # Restrict the plain card label to this target. Another card's label must
-        # neither skip an available target nor block popup dismissal verification.
-        roi = tuple(f3.roi_back)
-        notice = RuleOcr(roi=roi, area=roi, mode='Full', method='Default',
-                         keyword='', name='ryou_target_already_broken')
-        notice.score = 0.8
-        return any(''.join(result.ocr_text.split()).strip('！!。.') == '已攻破'
-                   for result in notice.detect_and_ocr(image))
-
-    def _no_attackable_targets(self):
-        """Broken cards sink; the leading group must be explicitly unavailable."""
-        if (not is_ryou_toppa_page(self)
-                or self.appear(RealmRaidAssets.I_FIRE, threshold=0.8)):
-            return False
-        for index, area in enumerate(area_map):
-            if self._area_finished(index):
-                continue
-            if any(self.appear(rule, threshold=0.8) for rule in area['fail_sign']):
-                continue
-            # An available or unrecognized card is not completion evidence.
-            return False
-        return True
-
-    def _finish_no_attackable_targets(self):
-        # Recheck the current leading group in fresh frames: failed battle
-        # returns and click failures alone must never mark this run complete.
-        # Keep the normal success interval; the guild is not necessarily 100%.
-        self.finish_completed_task(
-            'RyouToppa', 'All leading targets are broken or skipped failures',
-            verify=self._no_attackable_targets,
-            schedule=lambda: self.set_next_run(task='RyouToppa', finish=True,
-                                               server=True, success=True))
 
     def flush_area_cache(self):
         time.sleep(2)
@@ -369,152 +280,53 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, RyouToppaAssets):
             p1 = (safe_pos_x, safe_pos_y)
             p2 = (safe_pos_x, safe_pos_y - 101)
             logger.info('Swipe %s -> %s, %s ' % (point2str(*p1), point2str(*p2), duration))
-            self.device.swipe(
-                p1,
-                p2,
-                duration=duration,
-                control_name='RYOU_TOPPA_REFRESH',
-            )
+            self.device.swipe_adb(p1, p2, duration=duration)
             time.sleep(2)
 
     def attack_area(self, index: int):
         """
         :return: 战斗成功(True) or 战斗失败(False) or 区域不可用（False） or 没有进攻机会（设定下次运行并退出）
         """
-        # 每次进攻前检查页面和区域可用性。
-        self._ensure_ryou_toppa_page()
+        # 每次进攻前检查区域可用性
         if not self.check_area(index):
             return False
+
         # 正式进攻会设定 2s - 10s 的随机延迟，避免攻击间隔及其相近被检测为脚本。
         if self.config.ryou_toppa.raid_config.random_delay:
             delay = random_delay()
             time.sleep(delay)
+
+
         rcl = area_map[index].get("rule_click")
+        # # 点击攻击区域，等待攻击按钮出现。
+        # self.ui_click(rcl, stop=RealmRaidAssets.I_FIRE, interval=2)
         # 塔塔开！
-        popup_failure_count = 0
-        popup_wait_timer = None
-        battle_wait_timer = None
-        self.device.click_record_clear()
+        click_failure_count = 0
         while True:
             self.screenshot()
-            if self.is_in_battle(False):
+            if click_failure_count >= 5:
+                logger.warning("Click failure, check your click position")
+                return False
+            if not self.appear(self.I_TOPPA_RECORD, threshold=0.85):
+                time.sleep(1)
+                self.screenshot()
+                if self.appear(self.I_TOPPA_RECORD, threshold=0.85):
+                    continue
                 logger.info("Start attach area [%s]" % str(index + 1))
                 return self.run_general_battle(config=self.config.ryou_toppa.general_battle_config)
-            if self._ryou_raid_complete():
-                if self.appear(RealmRaidAssets.I_FIRE, threshold=0.8):
-                    return self._skip_unavailable_area()
-                self._ui_verify(self._ryou_raid_complete, [])
-                self.plan_tomorrow_ryoutoppa()
-                raise TaskEnd
 
-            if popup_failure_count >= TOPPA_CLICK_FAILURE_LIMIT:
-                logger.warning(
-                    f'挑战进入实际失败达到{TOPPA_CLICK_FAILURE_LIMIT}次，'
-                    f'关闭浮窗并跳过当前区域：popup={popup_failure_count}'
-                )
-                return self._skip_unavailable_area()
-
-            # 已被其他成员攻打的目标不会进入战斗。只挑战一次，读到提示
-            # 或等待超时后关闭浮窗并换目标，不能继续点击同一个挑战按钮。
-            if battle_wait_timer is not None:
-                if self._area_already_attacked():
-                    logger.info('该结界已被攻打，关闭挑战浮窗并切换目标')
-                    return self._skip_unavailable_area()
-                if not battle_wait_timer.reached():
-                    continue
-                logger.warning('单次挑战后未进入战斗，关闭浮窗并切换目标')
-                return self._skip_unavailable_area()
-
-            # 挑战浮窗已出现时点击挑战按钮，并开启独立的战斗等待窗口。
-            if self.appear(RealmRaidAssets.I_FIRE, threshold=0.8):
-                popup_wait_timer = None
-                if self.appear_then_click(
-                    RealmRaidAssets.I_FIRE,
-                    interval=2,
-                    threshold=0.8,
-                ):
-                    battle_wait_timer = Timer(TOPPA_BATTLE_WAIT_TIMEOUT).start()
-                continue
-
-            # 点击结界卡片后等待挑战浮窗出现。浮窗等待超时才算一次
-            # 结界卡片点击失败，不能把“已经发出点击”直接当作失败。
-            if popup_wait_timer is not None:
-                if not popup_wait_timer.reached():
-                    continue
-                popup_wait_timer = None
-                popup_failure_count += 1
-                logger.warning(
-                    '点击目标后挑战浮窗未出现：'
-                    f'{popup_failure_count}/'
-                    f'{TOPPA_CLICK_FAILURE_LIMIT}'
-                )
-                continue
-
-            self._ensure_ryou_toppa_page()
-            if self._ryou_raid_complete():
+            if self.appear_then_click(RealmRaidAssets.I_FIRE, interval=2, threshold=0.8):
+                click_failure_count += 1
                 continue
             if self.click(rcl, interval=5):
+                # https://github.com/runhey/OnmyojiAutoScript/issues/1748
                 time.sleep(random.uniform(0, 0.3))
-                popup_wait_timer = Timer(TOPPA_POPUP_WAIT_TIMEOUT).start()
+                click_failure_count += 1
                 continue
 
-    def _area_already_attacked(self):
-        """Only the explicit unavailable-target notice ends the battle wait early."""
-        image = self.device.image
-        if image is None or len(image.shape) < 2:
-            return False
-        height, width = image.shape[:2]
-        if height <= 0 or width <= 0:
-            return False
-        roi = (0, 0, width, height)
-        notice = RuleOcr(roi=roi, area=roi, mode='Full', method='Default',
-                         keyword='', name='ryou_already_attacked')
-        notice.score = 0.8
-        notices = {'该结界已被攻打', '该结界已被攻破', '该结界已攻破'}
-        return any(''.join(result.ocr_text.split()).strip('！!。.') in notices
-                   for result in notice.detect_and_ocr(image))
-
-    def _attack_exit_ready(self):
-        # A late battle start must be handled by the battle controller. Otherwise
-        # the raid page and absence of its challenge popup must both be verified.
-        if self.is_in_battle(False):
-            return True
-        return (not self.appear(RealmRaidAssets.I_FIRE, threshold=0.8)
-                and (is_ryou_toppa_page(self) or self._ryou_raid_complete())
-                and not self._area_already_attacked())
-
-    def _skip_unavailable_area(self):
-        """Close one detected popup, verify fresh frames, then let run select another area.
-
-        「关闭浮窗」与「战斗开始」存在竞态：结界突破高峰期点挑战后可能要好几秒
-        才进入战斗，若此时已判定失败并去关浮窗，两边会撞在一起导致脚本崩溃重启
-        （10-06 13:55:47 实测）。因此在关浮窗**之前**先用新鲜帧复核一次战斗态，
-        确认真没进战斗才动手。
-        """
-        self.screenshot()
-        if self.is_in_battle(False):
-            return self.run_general_battle(config=self.config.ryou_toppa.general_battle_config)
-        # 竞态复核：判定与关窗之间战斗可能才刚开始（实测间隔仅 50ms）。
-        settle = Timer(1.5).start()
-        while not settle.reached():
-            self.screenshot()
-            if self.is_in_battle(False):
-                logger.info('Battle started while closing the popup; resume the battle')
-                return self.run_general_battle(config=self.config.ryou_toppa.general_battle_config)
-        controls = []
-        if self.appear(RealmRaidAssets.I_FIRE, threshold=0.8):
-            if self.device.click(*self.C_SAFE_AREA.coord(),
-                                 control_name=self.C_SAFE_AREA.name) is False:
-                raise TaskRecoveryFailed('寮突破挑战浮窗关闭点击被阻止')
-            controls = [self.C_SAFE_AREA]
-        self._ui_verify(self._attack_exit_ready, controls)
-        if self.is_in_battle(False):
-            return self.run_general_battle(config=self.config.ryou_toppa.general_battle_config)
-        if self._ryou_raid_complete():
-            self._ui_verify(self._ryou_raid_complete, [])
-            self.plan_tomorrow_ryoutoppa()
-            raise TaskEnd
-        return False
+    @battle_wait_strategy()
+    def battle_wait(self, *args, **kwargs):
+        return self.battle_wait_with_strategy(*args, **kwargs)
 
 
 if __name__ == "__main__":

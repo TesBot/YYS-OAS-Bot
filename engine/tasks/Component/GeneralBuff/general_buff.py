@@ -3,13 +3,14 @@
 # github https://github.com/runhey
 import time
 
+import cv2
+import numpy as np
+
 from tasks.Component.GeneralBuff.assets import GeneralBuffAssets
 from module.atom.ocr import RuleOcr
 from module.atom.image import RuleImage
 from tasks.base_task import BaseTask
 from module.logger import logger
-from module.exception import TaskRecoveryFailed
-from typing import Optional
 
 
 class GeneralBuff(BaseTask, GeneralBuffAssets):
@@ -20,22 +21,20 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         :return:
         """
         logger.info('Open buff')
-        self.ui_click(self.I_BUFF_1, self.I_CLOUD, interval=2)
-        deadline = time.monotonic() + self.device.performance.timeout(30)
-        swipes = 0
-        while time.monotonic() < deadline:
+        while 1:
             self.screenshot()
-            if self.appear(self.I_AWAKE):
-                return self._ui_verify(lambda: self.appear(self.I_CLOUD) and self.appear(self.I_AWAKE),
-                                       [self.S_BUFF_UP] if swipes else [])
-            if not self.appear(self.I_CLOUD) or swipes >= 3:
+            if self.appear(self.I_CLOUD):
                 break
-            if self.swipe(self.S_BUFF_UP, interval=2):
-                swipes += 1
-                self.screenshot()
-                if not self.appear(self.I_CLOUD):
-                    raise TaskRecoveryFailed('Buff panel lost after scrolling')
-        raise TaskRecoveryFailed('Buff list did not reach its top after three verified swipes')
+            if self.appear_then_click(self.I_BUFF_1, interval=2):
+                continue
+
+        check_image = self.I_AWAKE
+        while 1:
+            self.screenshot()
+            if self.appear(check_image):
+                break
+
+            self.swipe(self.S_BUFF_UP, interval=2)
 
     def close_buff(self):
         """
@@ -43,9 +42,14 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         :return:
         """
         logger.info('Close buff')
-        self.ui_click_until_smt_disappear(self.I_BUFF_1, self.I_CLOUD, interval=2)
+        while 1:
+            self.screenshot()
+            if not self.appear(self.I_CLOUD):
+                break
+            if self.appear_then_click(self.I_BUFF_1, interval=2):
+                continue
 
-    def get_area(self, buff: RuleOcr) -> Optional[tuple[int, int, int, int]]:
+    def get_area(self, buff: RuleOcr) -> tuple:
         """
         获取要点击的开关buff的区域
         :param cls:
@@ -56,20 +60,16 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         # 防止邀请框挡住BUFF框架
         self.reject_invite()
         self.screenshot()
-        result_list = buff.detect_and_ocr(self.device.image)
-        area = None
-        for result in result_list:
-            if result.ocr_text == buff.keyword:
-                area = (buff.roi[0] + result.box[0, 0], buff.roi[1] + result.box[0, 1],
-                        result.box[1, 0] - result.box[0,0], result.box[2, 1] - result.box[0,1])
-                break
-        if area is None:
+        area = buff.ocr(self.device.image)
+        if area == tuple([432.0, 143.0, 325.0, 21.0]):
+            logger.info(f'No {buff.name} buff')
             return None
+
         # 开始的x坐标就是文字的右边
         start_x = area[0] + area[2] + 10  # 10是文字和开关之间的间隔
         start_y = area[1] - 10
         width = 80  # 开关的宽度 80够了
-        height = 45
+        height = area[3] + 20
         return int(start_x), int(start_y), int(width), int(height)
 
     def set_switch_area(self, area):
@@ -81,109 +81,103 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         self.I_OPEN_YELLOW.roi_back = list(area)  # 动态设置roi
         self.I_CLOSE_RED.roi_back = list(area)
 
-    def gold_50(self, is_open: bool = True) -> bool:
+    def gold_50(self, is_open: bool = True):
         """
         金币50buff
         :param is_open: 是否打开
-        :return: 识别到且操作成功True
+        :return:
         """
-        logger.info('Gold 50 buff')
+        logger.info(f'{"Open" if is_open else "Close"} gold 50 buff')
         self.screenshot()
         area = self.get_area(self.O_GOLD_50)
         if not area:
             logger.warning('No gold 50 buff')
-            return False
+            return None
         self.set_switch_area(area)
         if is_open:
-            logger.info('Start open gold50 buff')
-            self.ui_click(self.I_CLOSE_RED, self.I_OPEN_YELLOW, interval=1)
-            return True
-        logger.info('Start close gold50 buff')
-        self.ui_click(self.I_OPEN_YELLOW, self.I_CLOSE_RED, interval=1)
-        return True
+            if not self.ui_click(click=self.I_CLOSE_RED, stop=self.I_OPEN_YELLOW, interval=1, timeout=10):
+                logger.warning('Open gold 50 buff failed')
+        else:
+            if not self.ui_click(click=self.I_OPEN_YELLOW, stop=self.I_CLOSE_RED, interval=1, timeout=10):
+                logger.warning('Close gold 50 buff failed')
 
-    def gold_100(self, is_open: bool = True) -> bool:
+    def gold_100(self, is_open: bool = True):
         """
         金币100buff
         :param is_open: 是否打开
         :return:
         """
-        logger.info('Gold 100 buff')
+        logger.info(f'{"Open" if is_open else "Close"} gold 100 buff')
         self.screenshot()
         area = self.get_area(self.O_GOLD_100)
         if not area:
             logger.warning('No gold 100 buff')
-            return False
+            return None
         self.set_switch_area(area)
         if is_open:
-            logger.info('Start open gold100 buff')
-            self.ui_click(self.I_CLOSE_RED, self.I_OPEN_YELLOW, interval=1)
-            return True
-        logger.info('Start close gold100 buff')
-        self.ui_click(self.I_OPEN_YELLOW, self.I_CLOSE_RED, interval=1)
-        return True
+            if not self.ui_click(click=self.I_CLOSE_RED, stop=self.I_OPEN_YELLOW, interval=1, timeout=10):
+                logger.warning('Open gold 100 buff failed')
+        else:
+            if not self.ui_click(click=self.I_OPEN_YELLOW, stop=self.I_CLOSE_RED, interval=1, timeout=10):
+                logger.warning('Close gold 100 buff failed')
 
-    def exp_50(self, is_open: bool = True) -> bool:
+    def exp_50(self, is_open: bool = True):
         """
         经验50buff
         :param is_open: 是否打开
         :return:
         """
-        logger.info('Exp 50 buff')
-        max_swipe = 2
-        while True:
+        logger.info(f'{"Open" if is_open else "Close"} exp 50 buff')
+        while 1:
             self.screenshot()
-            if max_swipe <= 0:
-                logger.warning('No exp 50 buff')
-                return False
             area = self.get_area(self.O_EXP_50)
-            if area:
-                self.set_switch_area(area)
-            if not area or (not self.appear(self.I_CLOSE_RED) and not self.appear(self.I_OPEN_YELLOW)):
-                self.device.swipe(p2=(530, 240), p1=(580, 320))
-                max_swipe -= 1
-                time.sleep(1)
+            if not area:
+                logger.warning('No exp 50 buff')
                 continue
-            break
-        if is_open:
-            logger.info('Start open exp50 buff')
-            self.ui_click(self.I_CLOSE_RED, self.I_OPEN_YELLOW, interval=1)
-            return True
-        logger.info('Start close exp50 buff')
-        self.ui_click(self.I_OPEN_YELLOW, self.I_CLOSE_RED, interval=1)
-        return True
+            self.set_switch_area(area)
 
-    def exp_100(self, is_open: bool = True) -> bool:
+            if not self.appear(self.I_OPEN_YELLOW) and not self.appear(self.I_CLOSE_RED):
+                self.device.swipe(p2=(530, 240), p1=(580, 320))
+                time.sleep(1)
+            else:
+                break
+
+        if is_open:
+            if not self.ui_click(click=self.I_CLOSE_RED, stop=self.I_OPEN_YELLOW, interval=1, timeout=10):
+                logger.warning('Open exp 50 buff failed')
+        else:
+            if not self.ui_click(click=self.I_OPEN_YELLOW, stop=self.I_CLOSE_RED, interval=1, timeout=10):
+                logger.warning('Close exp 50 buff failed')
+
+    def exp_100(self, is_open: bool = True):
         """
         经验100buff
         :param is_open: 是否打开
         :return:
         """
-        logger.info('Exp 100 buff')
-        max_swipe = 2
-        while True:
-            if max_swipe <= 0:
-                logger.warning('No exp 100 buff')
-                return False
+        logger.info(f'{"Open" if is_open else "Close"} exp 100 buff')
+        while 1:
             self.screenshot()
             area = self.get_area(self.O_EXP_100)
-            if area:
-                self.set_switch_area(area)
-            if not area or (not self.appear(self.I_CLOSE_RED) and not self.appear(self.I_OPEN_YELLOW)):
-                self.device.swipe(p2=(530, 240), p1=(580, 320))
-                max_swipe -= 1
-                time.sleep(1)
+            if not area:
+                logger.warning('No exp 100 buff')
                 continue
-            break
-        if is_open:
-            logger.info('Start open exp100 buff')
-            self.ui_click(self.I_CLOSE_RED, self.I_OPEN_YELLOW, interval=1)
-            return True
-        logger.info('Start close exp100 buff')
-        self.ui_click(self.I_OPEN_YELLOW, self.I_CLOSE_RED, interval=1)
-        return True
+            self.set_switch_area(area)
 
-    def get_area_image(self, target: RuleImage) -> Optional[tuple[int, int, int, int]]:
+            if not self.appear(self.I_OPEN_YELLOW) and not self.appear(self.I_CLOSE_RED):
+                self.device.swipe(p2=(530, 240), p1=(580, 320))
+                time.sleep(1)
+            else:
+                break
+
+        if is_open:
+            if not self.ui_click(click=self.I_CLOSE_RED, stop=self.I_OPEN_YELLOW, interval=1, timeout=10):
+                logger.warning('Open exp 100 buff failed')
+        else:
+            if not self.ui_click(click=self.I_OPEN_YELLOW, stop=self.I_CLOSE_RED, interval=1, timeout=10):
+                logger.warning('Close exp 100 buff failed')
+
+    def get_area_image(self, target: RuleImage) -> list:
         """
         获取觉醒加成或者是御魂加成所要点击的区域
         因为实在的图片比ocr快
@@ -194,14 +188,16 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         self.reject_invite()
         self.screenshot()
 
-        if not self.appear(target):
+        if not target.match(self.device.image):
             logger.warning(f'No {target.name} buff')
             return None
-        start_x = int(target.roi_front[0] + 390)
+            # logger.info(f'front area: {target.roi_front}')
+            # logger.info(f'front center: {target.front_center()}')
+        start_x = int(target.front_center()[0] + 364)
         start_y = int(target.roi_front[1])
         width = 80
         height = int(target.roi_front[3])
-        return start_x, start_y, width, height
+        return [start_x, start_y, width, height]
 
     def awake(self, is_open: bool = True):
         """
@@ -209,7 +205,7 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         :param is_open: 是否打开
         :return:
         """
-        logger.info('Awake buff')
+        logger.info(f'{"Open" if is_open else "Close"} awake buff')
         self.screenshot()
         area = self.get_area_image(self.I_AWAKE)
         if not area:
@@ -217,12 +213,11 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
             return None
         self.set_switch_area(area)
         if is_open:
-            logger.info('Start open awake buff')
-            self.ui_click(self.I_CLOSE_RED, self.I_OPEN_YELLOW, interval=1)
-            return True
-        logger.info('Start close awake buff')
-        self.ui_click(self.I_OPEN_YELLOW, self.I_CLOSE_RED, interval=1)
-        return True
+            if not self.ui_click(click=self.I_CLOSE_RED, stop=self.I_OPEN_YELLOW, interval=1, timeout=10):
+                logger.warning('Open awake buff failed')
+        else:
+            if not self.ui_click(click=self.I_OPEN_YELLOW, stop=self.I_CLOSE_RED, interval=1, timeout=10):
+                logger.warning('Close awake buff failed')
 
     def soul(self, is_open: bool = True):
         """
@@ -230,7 +225,7 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
         :param is_open: 是否打开
         :return:
         """
-        logger.info('Soul buff')
+        logger.info(f'{"Open" if is_open else "Close"} soul buff')
         self.screenshot()
         area = self.get_area_image(self.I_SOUL)
         if not area:
@@ -238,38 +233,43 @@ class GeneralBuff(BaseTask, GeneralBuffAssets):
             return None
         self.set_switch_area(area)
         if is_open:
-            logger.info('Start open soul buff')
-            self.ui_click(self.I_CLOSE_RED, self.I_OPEN_YELLOW, interval=1)
-            return True
-        logger.info('Start close soul buff')
-        self.ui_click(self.I_OPEN_YELLOW, self.I_CLOSE_RED, interval=1)
-        return True
+            if not self.ui_click(click=self.I_CLOSE_RED, stop=self.I_OPEN_YELLOW, interval=1, timeout=10):
+                logger.warning('Open soul buff failed')
+        else:
+            if not self.ui_click(click=self.I_OPEN_YELLOW, stop=self.I_CLOSE_RED, interval=1, timeout=10):
+                logger.warning('Close soul buff failed')
 
     def reject_invite(self):
         from tasks.Component.GeneralInvite.assets import GeneralInviteAssets as gia
-        controls = (gia.I_I_REJECT_3, gia.I_I_REJECT_2, gia.I_I_REJECT_1)
-        sent = set()
-        deadline = time.monotonic() + self.device.performance.timeout(30)
-        while time.monotonic() < deadline:
+        while 1:
             self.screenshot()
-            current = next((control for control in controls if self.appear(control)), None)
-            if current is None:
-                return self._ui_verify(lambda: not any(self.appear(control) for control in controls), [])
-            if current.name in sent:
-                raise TaskRecoveryFailed('Repeated invitation after verified rejection')
-            if not self.appear_then_click(current):
-                raise TaskRecoveryFailed('Invitation rejection input was blocked')
-            sent.add(current.name)
-            self._ui_verify(lambda: not self.appear(current), [current])
-        raise TaskRecoveryFailed('Invitation rejection did not complete')
+            if not (self.appear(gia.I_I_REJECT_1) or self.appear(gia.I_I_REJECT_2) or self.appear(gia.I_I_REJECT_3)):
+                break
+            if self.appear(gia.I_I_REJECT_3):
+                self.click(gia.I_I_REJECT_3, 6)
+                continue
+            if self.appear(gia.I_I_REJECT_2):
+                self.click(gia.I_I_REJECT_2, 6)
+                continue
+            if self.appear(gia.I_I_REJECT_1):
+                self.click(gia.I_I_REJECT_1, 6)
+                continue
 
 
 if __name__ == '__main__':
     from module.config.config import Config
     from module.device.device import Device
 
-    c = Config('日常2')
+    c = Config('oas1')
     d = Device(c)
     t = GeneralBuff(c, d)
 
+    t.open_buff()
+    # t.screenshot()
+    #
     t.awake(is_open=True)
+    t.soul(is_open=True)
+    t.gold_50(is_open=False)
+    t.gold_100(is_open=False)
+    t.exp_50(is_open=True)
+    t.exp_100(is_open=True)

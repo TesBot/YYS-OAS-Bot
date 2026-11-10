@@ -11,11 +11,6 @@ class CheckinBigGodConfig(BaseModel):
         default='',
         description='checkin_big_god_usage_help'
     )
-    manual_claim: bool = Field(
-        default=False,
-        title='手动领取',
-        description='checkin_big_god_manual_claim_help',
-    )
 
 
 class AutoCheckinBigGod(ConfigBase):

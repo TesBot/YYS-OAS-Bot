@@ -8,6 +8,7 @@ from tasks.GameUi.page import page_main, page_daily
 from tasks.TalismanPass.assets import TalismanPassAssets
 from tasks.TalismanPass.config import TalismanConfig, LevelReward
 
+from module.atom.image import RuleImage
 from module.logger import logger
 from module.exception import TaskEnd
 from module.base.timer import Timer
@@ -17,19 +18,25 @@ class ScriptTask(GameUi, TalismanPassAssets):
 
     def run(self):
         self.goto_page(page_daily)
+        task_tab = RuleImage(
+            roi_front=(1198, 328, 36, 73),
+            roi_back=(1185, 307, 64, 117),
+            method="Template matching",
+            threshold=0.8,
+            file="./tasks/TalismanPass/tp/tp_task_tab.png",
+        )
+        self.appear_then_click(task_tab)
         con: TalismanConfig = self.config.talisman_pass.talisman
 
-        # 收取任务全部奖励
+        # 收取全部奖励
         if self.in_task():
             self.get_all()
         # 收取花合战等级奖励
-        if con.get_flower:
-            self.get_flower(con.level_reward)
+        self.get_flower(con.level_reward)
         # 收取1500签御魂
         if con.harvest_soul:
             self.goto_page(page_main)
             self.harvest_soul()
-        self.goto_page(page_main)
         self.set_next_run(task='TalismanPass', success=True, finish=True)
         raise TaskEnd('TalismanPass')
 
@@ -93,11 +100,6 @@ class ScriptTask(GameUi, TalismanPassAssets):
         self.screenshot()
         if self.appear(self.I_TP_GOTO) or self.appear(self.I_TP_EXP):
             return True
-        if self.appear(self.I_RED_POINT_TASK):
-            self.click(self.I_RED_POINT_TASK)
-            logger.info('Appear task reward')
-            return True
-        logger.info('No any task reward')
         return False
     
     def harvest_soul(self):
@@ -110,9 +112,9 @@ class ScriptTask(GameUi, TalismanPassAssets):
         while 1:
             self.screenshot()
             # 自选御魂
-            if self.appear(self.I_TP_SOUL_1):
+            if self.appear_multi_scale(self.I_TP_SOUL_1,scale_range=(0.8,1.1)):
                 logger.info('Select soul 2')
-                self.ui_click(self.I_TP_SOUL_1, stop=self.I_TP_SOUL_2)
+                self.ui_click_multi_scale(self.I_TP_SOUL_1, stop=self.I_TP_SOUL_2,scale_range=(0.8,1.1))
                 self.ui_click(self.I_TP_SOUL_2, stop=self.I_TP_SOUL_3, interval=3)
                 self.ui_click_until_disappear(click=self.I_TP_SOUL_3)
                 timer_harvest.reset()
@@ -135,5 +137,4 @@ if __name__ == '__main__':
     t.screenshot()
 
     t.run()
-
 

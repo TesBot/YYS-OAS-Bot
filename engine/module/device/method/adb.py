@@ -12,7 +12,7 @@ from module.device.connection import Connection
 from module.device.method.minitouch import smooth_path
 from module.device.method.utils import (RETRY_TRIES, retry_sleep, remove_prefix, handle_adb_error,
                                         ImageTruncated, PackageNotInstalled)
-from module.exception import RequestHumanTakeover, ScriptError
+from module.exception import RequestHumanTakeover, ScriptError, EmulatorNotRunningError
 from module.logger import logger
 
 
@@ -33,6 +33,14 @@ def retry(func):
             # Can't handle
             except RequestHumanTakeover:
                 break
+            # Emulator not running, try to restart it
+            except EmulatorNotRunningError:
+                logger.error('Emulator not running, attempting to restart')
+                if hasattr(self, 'emulator_start'):
+                    self.emulator_start()
+
+                def init():
+                    self.adb_reconnect()
             # When adb server was killed
             except ConnectionResetError as e:
                 logger.error(e)
@@ -184,6 +192,9 @@ class Adb(Connection):
 
     @retry
     def swipe_adb(self, p1, p2, duration=0.1):
+        # 桌面客户端模式没有 adb 设备，滑动改走窗口消息路径（不影响模拟器流程）
+        if getattr(self, 'is_desktop', False):
+            return self.swipe_window_message(p1, p2)
         duration = int(duration * 1000)
         self.adb_shell(['input', 'swipe', *p1, *p2, duration])
 

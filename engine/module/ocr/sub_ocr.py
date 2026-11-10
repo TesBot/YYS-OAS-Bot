@@ -8,9 +8,11 @@ import cn2an
 
 from datetime import timedelta
 
+from module.ocr.ppocr import TextSystem
 from module.exception import ScriptError
 from module.base.utils import area_pad, crop, float2str
 from module.ocr.base_ocr import BaseCor, OcrMode, OcrMethod
+from module.ocr.utils import merge_area
 from module.logger import logger
 
 
@@ -21,11 +23,12 @@ class Full(BaseCor):
     def after_process(self, result):
         return result
 
-    def ocr_full(self, image, keyword: str=None) -> tuple:
+    def ocr_full(self, image, keyword: str=None, exact: bool=False) -> tuple:
         """
         检测整个图片的文本,并对结果进行过滤。返回的是匹配到的keyword的左边。如果没有匹配到返回(0, 0, 0, 0)
         :param image:
         :param keyword:
+        :param exact: 是否只匹配完整的单个 OCR 文本
         :return:
         """
         if keyword is None:
@@ -35,19 +38,26 @@ class Full(BaseCor):
         if not boxed_results:
             return 0, 0, 0, 0
 
-        index_list = self.filter(boxed_results, keyword)
+        index_list = self.filter(boxed_results, keyword, exact=exact)
         logger.info(f"OCR [{self.name}] detected in {index_list}")
         # 如果一个都没有匹配到
         if not index_list:
             return 0, 0, 0, 0
 
-        # Use actual polygon extents; merge_area expects endpoints, not width/height.
-        points = [point for index in index_list for point in boxed_results[index].box]
-        left = min(point[0] for point in points)
-        top = min(point[1] for point in points)
-        right = max(point[0] for point in points)
-        bottom = max(point[1] for point in points)
-        self.area = left + self.roi[0], top + self.roi[1], right - left, bottom - top
+        # 如果匹配到了多个,则合并所有的坐标，返回合并后的坐标
+        if len(index_list) > 1:
+            area_list = [(
+                boxed_results[index].box[0, 0],  # x
+                boxed_results[index].box[0, 1],  # y
+                boxed_results[index].box[1, 0] - boxed_results[index].box[0, 0],     # width
+                boxed_results[index].box[2, 1] - boxed_results[index].box[0, 1],     # height
+            ) for index in index_list]
+            area = merge_area(area_list)
+            self.area = area[0]+self.roi[0], area[1]+self.roi[1], area[2], area[3]
+        else:
+            box = boxed_results[index_list[0]].box
+            self.area = box[0, 0]+self.roi[0], box[0, 1]+self.roi[1], box[1, 0] - box[0, 0], box[2, 1] - box[0, 1]
+
         logger.info(f"OCR [{self.name}] detected in {self.area}")
         return self.area
 
@@ -70,6 +80,7 @@ class Single(BaseCor):
                 return result
 
             # 如果没有识别到，这个时候考虑到可能是竖方向的文本, 使用detect_and_ocr来进行识别
+            logger.info(f"[{self.name}] Try to detect vertically")
             result = self.detect_and_ocr(image)
             if not result:
                 logger.info(f"[{self.name}]: No text detected in ROI")
@@ -99,6 +110,12 @@ class Digit(Single):
         result = [char for char in result if char.isdigit()]
         result = ''.join(result)
 
+        # 如果结果全部是 '0' 且长度 >= 2，视为 OCR 错误（例如 900 → 00），强制设为 "1"
+        if result and all(ch == '0' for ch in result) and len(result) >= 2:
+            logger.warning(f'OCR [{self.name} {result}] all-zero with length>=2, force set to "1"')
+            result = '1'
+
+
         prev = result
         result = int(result) if result else 0
         if str(result) != prev:
@@ -114,10 +131,10 @@ class Digit(Single):
         """
         result = self.ocr_single(image)
 
-        if result and str(result).isdigit():
+        if result == "":
+            return 0
+        else:
             return int(result)
-        return 0
-
 
 class DigitCounter(Single):
     def after_process(self, result):
@@ -219,8 +236,6 @@ class Quantity(BaseCor):
         if '/' in result:
             result_split = result.split('/')
             result = result_split[0]
-        if result == '':
-            return 0
         result = cn2an.cn2an(result, 'smart')
 
         try:

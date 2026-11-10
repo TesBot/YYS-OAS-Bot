@@ -134,12 +134,9 @@ class ScrcpyCore(Connection):
             target=self._scrcpy_stream_loop, daemon=True
         )
         self._scrcpy_stream_loop_thread.start()
-        thread_timeout = Timer(3).start()
         while 1:
             if self._scrcpy_stream_loop_thread is not None and self._scrcpy_stream_loop_thread.is_alive():
                 break
-            if thread_timeout.reached():
-                raise ScrcpyError('Scrcpy video thread did not start within 3s')
             self.sleep(0.001)
 
         logger.info('Scrcpy server is up')

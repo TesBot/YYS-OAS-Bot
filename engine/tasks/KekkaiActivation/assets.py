@@ -17,11 +17,23 @@ class KekkaiActivationAssets:
 	C_A_SELECT_AUTO = RuleClick(roi_front=(173,160,354,127), roi_back=(173,160,354,127), name="a_select_auto")
 
 
+	# Ocr Rule Assets
+	# 这张卡一共有多少小时 
+	O_CARD_ALL_TIME = RuleOcr(roi=(926,262,95,31), area=(926,262,95,31), mode="Duration", method="Default", keyword="", name="card_all_time")
+	# 识别结界卡每小时收益 
+	O_CHECK_CARD_NUMBER = RuleOcr(roi=(305,153,107,481), area=(305,153,107,481), mode="Single", method="Default", keyword="", name="check_card_number")
+
+
+	# Swipe Rule Assets
+	# description 
+	S_CARDS_SWIPE = RuleSwipe(roi_front=(178,401,23,23), roi_back=(176,168,29,24), mode="default", name="cards_swipe")
+
+
 	# Image Rule Assets
 	# 斗鱼收获奖励4星 
-	I_A_HARVEST_FISH4 = RuleImage(roi_front=(897,159,48,40), roi_back=(872,128,140,181), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_fish4.png")
+	I_A_HARVEST_FISH4 = RuleImage(roi_front=(897,159,48,40), roi_back=(750,90,250,230), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_fish4.png")
 	# 一般的收获奖励 
-	I_A_HARVEST_EXP = RuleImage(roi_front=(891,153,49,43), roi_back=(865,121,152,183), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_exp.png")
+	I_A_HARVEST_EXP = RuleImage(roi_front=(891,153,49,43), roi_back=(750,90,250,230), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_exp.png")
 	# "结界卡" 
 	I_A_CARDS_REALM = RuleImage(roi_front=(0,0,100,100), roi_back=(0,0,100,100), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_cards_realm.png")
 	# description 
@@ -53,36 +65,24 @@ class KekkaiActivationAssets:
 	# description 
 	I_A_CHECK_CARD = RuleImage(roi_front=(513,32,260,49), roi_back=(513,32,260,49), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_check_card.png")
 	# 太鼓4 
-	I_A_HARVEST_KAIKO_4 = RuleImage(roi_front=(894,164,48,41), roi_back=(867,132,148,187), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_kaiko_4.png")
+	I_A_HARVEST_KAIKO_4 = RuleImage(roi_front=(894,164,48,41), roi_back=(750,90,250,230), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_kaiko_4.png")
 	# description 
-	I_A_HARVEST_KAIKO_3 = RuleImage(roi_front=(893,163,47,42), roi_back=(865,136,148,178), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_kaiko_3.png")
+	I_A_HARVEST_KAIKO_3 = RuleImage(roi_front=(893,163,47,42), roi_back=(750,90,250,230), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_kaiko_3.png")
 	# 太鼓6 
-	I_A_HARVEST_KAIKO_6 = RuleImage(roi_front=(898,160,45,38), roi_back=(868,129,146,184), threshold=0.7, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_kaiko_6.png")
+	I_A_HARVEST_KAIKO_6 = RuleImage(roi_front=(898,160,45,38), roi_back=(750,90,250,230), threshold=0.7, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_kaiko_6.png")
 	# 斗鱼6 
-	I_A_HARVEST_FISH_6 = RuleImage(roi_front=(898,159,45,38), roi_back=(869,131,165,184), threshold=0.7, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_fish_6.png")
+	I_A_HARVEST_FISH_6 = RuleImage(roi_front=(898,159,45,38), roi_back=(750,90,250,230), threshold=0.7, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_fish_6.png")
 	# 太阴3 
-	I_A_HARVEST_MOON_3 = RuleImage(roi_front=(897,159,46,40), roi_back=(869,127,155,184), threshold=0.7, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_moon_3.png")
+	I_A_HARVEST_MOON_3 = RuleImage(roi_front=(897,159,46,40), roi_back=(750,90,250,230), threshold=0.7, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_moon_3.png")
 	# 卸下 
 	I_A_DEMOUNT = RuleImage(roi_front=(939,575,55,47), roi_back=(903,551,107,91), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_demount.png")
 	# 斗鱼3 
-	I_A_HARVEST_FISH_3 = RuleImage(roi_front=(891,165,57,39), roi_back=(854,128,160,174), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_fish_3.png")
+	I_A_HARVEST_FISH_3 = RuleImage(roi_front=(891,165,57,39), roi_back=(750,90,250,230), threshold=0.8, method="Template matching", file="./tasks/KekkaiActivation/a/a_a_harvest_fish_3.png")
 
 
 	# Image Rule Assets
 	# 用于判断是否滑到底了 
 	I_AA_SWIPE_BLOCK = RuleImage(roi_front=(124,622,35,32), roi_back=(117,612,50,51), threshold=0.9, method="Template matching", file="./tasks/KekkaiActivation/a/a_aa_swipe_block.png")
-
-
-	# Ocr Rule Assets
-	# 这张卡一共有多少小时 
-	O_CARD_ALL_TIME = RuleOcr(roi=(926,262,95,31), area=(926,262,95,31), mode="Duration", method="Default", keyword="", name="card_all_time")
-	# 识别结界卡每小时收益 
-	O_CHECK_CARD_NUMBER = RuleOcr(roi=(305,153,107,481), area=(305,153,107,481), mode="Single", method="Default", keyword="", name="check_card_number")
-
-
-	# Swipe Rule Assets
-	# description 
-	S_CARDS_SWIPE = RuleSwipe(roi_front=(178,401,23,23), roi_back=(176,168,29,24), mode="default", name="cards_swipe")
 
 
 	# Image Rule Assets

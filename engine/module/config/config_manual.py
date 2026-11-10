@@ -13,13 +13,13 @@ class ConfigManual:
         > AreaBoss > GoldYoukai > ExperienceYoukai > Nian > Tako > AutoCheckinBigGod > RealmRaid > RyouToppa > DailyTrifles > Exploration
         > Dokan > AbyssShadows > Hunt > GuildBanquet > DemonRetreat > GuildActivityMonitor
         > Orochi > OrochiMoans > OrochiJudgement > Sougenbi > FallenSun > EternitySea > SixRealms > OtherWorldTwilight
-        > Moonlight > MomentActivity > ActivityShikigami > MartialArts > WantedQuests
-        > BondlingFairyland > EvoZone > GoryouRealm > HeroTest > FindJade
+        > ActivityShikigami > BudokaiTournament > WantedQuests
+        > BondlingFairyland > EvoZone > GoryouRealm > HeroTest
         > CollectiveMissions
         > Pets > TalismanPass > Delegation > Hyakkiyakou
-        > Secret > WeeklyTrifles > MysteryShop > Duel > Chess > DraftDuel
-        > TrueOrochi > WeeklyPurchase
-        > MetaDemon > FrogBoss > FloatParade > LBS > Quiz > KittyShop > DyeTrials > MemoryScrolls > GuguArtStudio
+        > Secret > WeeklyTrifles > MysteryShop > Duel > FindJade
+        > TrueOrochi > RichMan
+        > MetaDemon > FrogBoss > FloatParade > Quiz > KittyShop > DyeTrials > MemoryScrolls
         """
 
     DEVICE_OVER_HTTP = False

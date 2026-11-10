@@ -1,11 +1,8 @@
 # This Python file uses the following encoding: utf-8
 # @author runhey
 # github https://github.com/runhey
-import json
-
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
-
 
 # 庭院皮肤
 class MainType(str, Enum):
@@ -25,19 +22,24 @@ class MainType(str, Enum):
     COSTUME_MAIN_13 = 'costume_main_13'  # 云景阆苑
     COSTUME_MAIN_14 = 'costume_main_14'  # 雪月华庭
     COSTUME_MAIN_15 = 'costume_main_15'  # 茨心乐园
-    COSTUME_MAIN_16 = 'costume_main_16'  # 琦梦茨庭
-    COSTUME_MAIN_17 = 'costume_main_17'  # 狐栖归处
-    COSTUME_MAIN_18 = 'costume_main_18'  # 玉岚狐庭
+    COSTUME_MAIN_16 = 'costume_main_16'  # 狐栖归处
+    COSTUME_MAIN_17 = 'costume_main_17'  # 玉岚狐庭
 
 # 结界皮肤
 class RealmType(str, Enum):
     COSTUME_REALM_DEFAULT = 'costume_realm_default'  # 妖扇结界
 
+# 鲤鱼旗皮肤
+class CarpBannerType(str, Enum):
+    COSTUME_CARPBANNER_DEFAULT = 'costume_carpbanner_default'  # 吉鲤游风
+    COSTUME_CARPBANNER_1 = 'costume_carpbanner_1'  # 无垢莲台
+    COSTUME_CARPBANNER_2 = 'costume_carpbanner_2'  # 萤灯月夜
+    COSTUME_CARPBANNER_3 = 'costume_carpbanner_3'  # 鸢戏游鲤
 
 # 主题，就是庭院最右下角的展开按钮
 class ThemeType(str, Enum):
     COSTUME_THEME_DEFAULT = 'costume_theme_default'  # 伊始之卷
-
+    COSTUME_THEME_XINYU_MINGXIAO = 'costume_theme_xinyu_mingxiao'  # 新语明霄
 
 # 幕间，就是式神录这里
 class ShikigamiType(str, Enum):
@@ -50,15 +52,15 @@ class ShikigamiType(str, Enum):
     COSTUME_SHIKIGAMI_6 = 'costume_shikigami_6'  # 月下火舞
     COSTUME_SHIKIGAMI_7 = 'costume_shikigami_7'  # 赤溟幽界
     COSTUME_SHIKIGAMI_8 = 'costume_shikigami_8'  # 童梦基地
-    COSTUME_SHIKIGAMI_9 = 'costume_shikigami_9'  # 眠鹿之森
+    COSTUME_SHIKIGAMI_9 = 'costume_shikigami_9'  # 鹿眠之森
     COSTUME_SHIKIGAMI_10 = 'costume_shikigami_10'  # 今宵胧明
     COSTUME_SHIKIGAMI_11 = 'costume_shikigami_11'  # 花札幕台
     COSTUME_SHIKIGAMI_12 = 'costume_shikigami_12'  # 拾光之窗
+    COSTUME_SHIKIGAMI_13 = 'costume_shikigami_13'  # 梦隙闲花
 
 # 签到主题
 class SignType(str, Enum):
     COSTUME_SIGN_DEFAULT = 'costume_sign_default'  # 默认
-
 
 # 战斗主题
 class BattleType(str, Enum):
@@ -79,55 +81,34 @@ class BattleType(str, Enum):
     COSTUME_BATTLE_14 = 'costume_battle_14'  # 茸茨跃动
     COSTUME_BATTLE_15 = 'costume_battle_15'  # 灵狐寄愿
 
+# 战斗场景
+class BattleSceneType(str, Enum):
+    COSTUME_BATTLE_SCENE_DEFAULT = 'costume_battle_scene_default'  # 默认
+    COSTUME_BATTLE_SCENE_1 = 'costume_battle_scene_1'  # 鎏金圣域
 
-# 庭院事务主题
-class CourtyardAffairType(str, Enum):
-    CUSTOM_COURTYARD_AFFAIR_DEFAULT = 'custom_courtyard_affair_default'  # 默认
-    CUSTOM_COURTYARD_AFFAIR_1 = 'custom_courtyard_affair_1'  # 龙仪星引
 
 class CostumeConfig(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-
     # 皮肤配置
-    costume_main_type: list[MainType] = Field(
-        default=[MainType.COSTUME_MAIN],
-        min_length=1,
-        description='costume_main_type_help',
-    )
+    costume_main_type: MainType = Field(default=MainType.COSTUME_MAIN, description='costume_main_type_help')
     costume_realm_type: RealmType = Field(default=RealmType.COSTUME_REALM_DEFAULT, description='costume_realm_type_help')
+    costume_carpbanner_type: CarpBannerType = Field(default=CarpBannerType.COSTUME_CARPBANNER_DEFAULT,description='costume_carpbanner_type_help')
     costume_theme_type: ThemeType = Field(default=ThemeType.COSTUME_THEME_DEFAULT, description='costume_theme_type_help')
     costume_shikigami_type: ShikigamiType = Field(default=ShikigamiType.COSTUME_SHIKIGAMI_DEFAULT, description='costume_shikigami_type_help')
     costume_sign_type: SignType = Field(default=SignType.COSTUME_SIGN_DEFAULT, description='costume_sign_type_help')
     costume_battle_type: BattleType = Field(default=BattleType.COSTUME_BATTLE_DEFAULT, description='costume_battle_type_help')
-    custom_courtyard_affair: CourtyardAffairType = Field(default=CourtyardAffairType.CUSTOM_COURTYARD_AFFAIR_DEFAULT)
+    costume_battle_scene_type: BattleSceneType = Field(default=BattleSceneType.COSTUME_BATTLE_SCENE_DEFAULT, description='costume_battle_scene_type_help')
 
-    @field_validator('costume_main_type', mode='before')
+    @field_validator('costume_realm_type', mode='before')
     @classmethod
-    def normalize_costume_main_type(cls, value):
-        """兼容旧单值、JSON数组字符串及OASX的字符串列表。"""
-        if isinstance(value, MainType):
-            values = [value]
-        elif isinstance(value, str):
-            raw_value = value.strip()
-            if raw_value.startswith('['):
-                try:
-                    values = json.loads(raw_value)
-                except json.JSONDecodeError:
-                    values = [raw_value]
-            else:
-                values = [raw_value]
-        elif isinstance(value, (list, tuple, set)):
-            values = list(value)
-        else:
-            values = [value]
+    def validate_realm(cls, v):
+        if v and v not in RealmType._value2member_map_:
+            return RealmType.COSTUME_REALM_DEFAULT
+        return v
 
-        normalized = []
-        for item in values:
-            main_type = item if isinstance(item, MainType) else MainType(str(item).strip())
-            if main_type not in normalized:
-                normalized.append(main_type)
-        return normalized
-
-    @field_validator("costume_realm_type", mode="before")
-    def convert_old_value(cls, v):
-        return RealmType.COSTUME_REALM_DEFAULT
+    @field_validator('costume_theme_type', mode='before')
+    @classmethod
+    def validate_theme(cls, v):
+        # Preserve selections saved by the earlier local numbered adaptation.
+        if v in ('costume_theme_1', 'costume_theme_2'):
+            return ThemeType.COSTUME_THEME_XINYU_MINGXIAO
+        return v

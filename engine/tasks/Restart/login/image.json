@@ -18,13 +18,13 @@
     "description": "庭院卷轴关闭"
   },
   {
-    "itemName": "login_courtyard",
-    "imageName": "login_courtyard.png",
-    "roiFront": "40,640,100,50",
-    "roiBack": "40,640,100,50",
+    "itemName": "login_scroll_close_area",
+    "imageName": "login_scroll_close_area.png",
+    "roiFront": "1181,634,28,39",
+    "roiBack": "1162,595,77,112",
     "method": "Template matching",
     "threshold": 0.8,
-    "description": "闲庭图片"
+    "description": "卷轴关闭区域点击(用户新增，用于点击I_LOGIN_SCROOLL_CLOSE的区域而不依赖图片识别)"
   },
   {
     "itemName": "login_red_close",
@@ -52,15 +52,6 @@
     "method": "Template matching",
     "threshold": 0.8,
     "description": "用于判断是否出现登录选区的"
-  },
-  {
-    "itemName": "watch_video_cancel",
-    "imageName": "login_watch_video_cancel.png",
-    "roiFront": "466,396,130,61",
-    "roiBack": "466,396,130,61",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "description": "登录时候不观看CG视频"
   },
   {
     "itemName": "login_specific_serve",
@@ -97,15 +88,6 @@
     "method": "Template matching",
     "threshold": 0.8,
     "description": "登录界面 弹出框 确定绑定手机"
-  },
-  {
-    "itemName": "login_login_cancel_bind_phone",
-    "imageName": "login_login_cancel_bind_phone.png",
-    "roiFront": "450,460,160,100",
-    "roiBack": "450,460,160,100",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "description": "登录界面 弹出框 取消绑定手机"
   },
   {
     "itemName": "login_login_onmyoji_genie",
@@ -153,21 +135,12 @@
     "description": "取消体验服切换弹窗"
   },
   {
-    "itemName": "cancel_battle",
-    "imageName": "login_cancel_battle.png",
-    "roiFront": "471,395,129,55",
-    "roiBack": "367,227,545,296",
+    "itemName": "login_courtyard",
+    "imageName": "login_courtyard.png",
+    "roiFront": "40,640,100,50",
+    "roiBack": "40,640,100,50",
     "method": "Template matching",
     "threshold": 0.8,
-    "description": "取消继续战斗"
-  },
-  {
-    "itemName": "return_chess_cancel",
-    "imageName": "login_return_chess_cancel.png",
-    "roiFront": "432,400,181,69",
-    "roiBack": "400,370,240,120",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "description": "取消返回百鬼棋局，进入棋局结算流程"
+    "description": "庭院卷轴收起状态标志(移植自mine)"
   }
 ]

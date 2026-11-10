@@ -1,6 +1,6 @@
+# This Python file uses the following encoding: utf-8
+# @author AzurTian
 from datetime import timedelta, time
-
-from enum import Enum
 
 from pydantic import Field, field_validator
 from tasks.Component.GeneralBattle.config_general_battle import GeneralBattleConfig, GreenMarkEnum
@@ -8,15 +8,11 @@ from tasks.Component.GeneralInvite.config_invite import InviteConfig
 from tasks.Component.SwitchSoul.switch_soul_config import SwitchSoulConfig
 from tasks.Component.config_base import ConfigBase, Time, dynamic_hide
 from tasks.Component.config_scheduler import Scheduler
-
-
-class UserStatus(str, Enum):
-    LEADER = 'leader'
-    MEMBER = 'member'
-    ALONE = 'alone'
+from tasks.Orochi.config import UserStatus
 
 
 class OtherWorldTwilightConfig(ConfigBase):
+    # 身份
     user_status: UserStatus = Field(default=UserStatus.LEADER, description='user_status_help')
     # 限制时间
     limit_time: Time = Field(default=Time(minute=30), description='limit_time_help')
@@ -32,8 +28,10 @@ class OtherWorldTwilightConfig(ConfigBase):
 
 
 class OWTBattleConfig(GeneralBattleConfig):
-    hide_fields = dynamic_hide('preset_enable', 'preset_group', 'preset_team', 'green_mark', 'green_mark_type',
-                               'continuous_battle', 'max_continuous', 'quick_exit')
+    hide_fields = dynamic_hide('preset_enable', 'preset_group', 'preset_team', 'green_mark', 'green_mark_type')
+
+    # pydantic v2 默认不校验默认值, validator 拦不到 CHOOSE, 必须直接给 NAME
+    green_mark_type: GreenMarkEnum = Field(default=GreenMarkEnum.NAME, description='green_mark_type_help')
 
     @field_validator('green_mark_type')
     @classmethod

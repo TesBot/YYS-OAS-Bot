@@ -1,8 +1,8 @@
 [
   {
     "itemName": "e_exploration_level_number",
-    "roiFront": "1065,203,124,352",
-    "roiBack": "1065,203,124,352",
+    "roiFront": "1064,206,121,337",
+    "roiBack": "1064,206,121,337",
     "mode": "Full",
     "method": "Default",
     "keyword": "",
@@ -28,11 +28,11 @@
   },
   {
     "itemName": "realm_raid_number1",
-    "roiFront": "898,10,94,38",
-    "roiBack": "898,10,94,38",
+    "roiFront": "920,12,78,30",
+    "roiBack": "919,12,80,30",
     "mode": "DigitCounter",
     "method": "Default",
     "keyword": "",
-    "description": "探索副本入口页 突破卷的数量(顶栏与章节列表页布局不同, 必须独立框选)"
+    "description": "（点出困难28时候）探索右上角 突破卷的数量"
   }
 ]

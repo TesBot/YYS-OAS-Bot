@@ -18,7 +18,6 @@ from module.device.method.droidcast import DroidCast
 from module.device.method.scrcpy import Scrcpy
 from module.device.method.nemu_ipc import NemuIpc
 from module.exception import RequestHumanTakeover, ScriptError
-from module.image.rpc import get_image_client
 from module.logger import logger
 
 
@@ -29,19 +28,14 @@ class Screenshot(Adb, DroidCast, Scrcpy, Window, NemuIpc):
     _screenshot_interval = Timer(0.1)
     _last_save_time = {}
     image: np.ndarray
-    image_frame_id: str | None = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if IS_WINDOWS:
-            # ConnectionAttr ends the cooperative init chain before Window.
-            # Windows still needs the Handle initializer behind Window; the
-            # Linux Window placeholder has no such base to initialize.
-            super(Window, self).__init__(*args, **kwargs)
+        super(Window, self).__init__(*args, **kwargs)
 
     @cached_property
     def screenshot_methods(self):
-        methods = {
+        return {
             'ADB': self.screenshot_adb,
             'ADB_nc': self.screenshot_adb_nc,
             'uiautomator2': self.screenshot_uiautomator2,
@@ -50,13 +44,9 @@ class Screenshot(Adb, DroidCast, Scrcpy, Window, NemuIpc):
             'DroidCast': self.screenshot_droidcast,
             'DroidCast_raw': self.screenshot_droidcast_raw,
             'scrcpy': self.screenshot_scrcpy,
+            'window_background': self.screenshot_window_background if IS_WINDOWS else None,
+            'nemu_ipc': self.screenshot_nemu_ipc
         }
-        if IS_WINDOWS:
-            methods.update({
-                'window_background': self.screenshot_window_background,
-                'nemu_ipc': self.screenshot_nemu_ipc,
-            })
-        return methods
 
     def screenshot(self):
         """
@@ -72,8 +62,6 @@ class Screenshot(Adb, DroidCast, Scrcpy, Window, NemuIpc):
                 self.screenshot_adb  # 第二个参数默认的是screenshot_adb
             )
             self.image = method()
-            frame_info = get_image_client().register_frame(self.image, self.config.config_name)
-            self.image_frame_id = frame_info["frame_id"]
 
             # if self.config.Emulator_ScreenshotDedithering:
             #     # This will take 40-60ms
@@ -167,19 +155,27 @@ class Screenshot(Adb, DroidCast, Scrcpy, Window, NemuIpc):
                 Minimum interval between 2 screenshots in seconds.
                 Or None for Optimization_ScreenshotInterval, 'combat' for Optimization_CombatScreenshotInterval
         """
-        combat = interval == 'combat'
         if interval is None:
             origin = self.config.script.optimization.screenshot_interval
-            interval = limit_in(origin, 0.1, 0.3)
+            # 分支判断放在夹取之前：写回发生在各自的 clamp 之后，先夹取会按错误的
+            # 区间改写用户配置。桌面模式 BitBlt 单帧约 5ms，允许更小间隔
+            if getattr(self, 'is_desktop', False):
+                interval = limit_in(origin, 0.05, 0.3)
+            elif self.config.Emulator_ScreenshotMethod == 'nemu_ipc':
+                # nemu_ipc 截图便宜，允许更小默认
+                interval = limit_in(origin, 0.1, 0.2)
+            else:
+                interval = limit_in(origin, 0.1, 0.3)
             if interval != origin:
                 logger.warning(f'Optimization.ScreenshotInterval {origin} is revised to {interval}')
                 self.config.script.optimization.screenshot_interval = interval
-            # Allow nemu_ipc to have a lower default
-            if self.config.Emulator_ScreenshotMethod == 'nemu_ipc':
-                interval = limit_in(origin, 0.1, 0.2)
         elif interval == 'combat':
             origin = self.config.script.optimization.combat_screenshot_interval
-            interval = limit_in(origin, 0.3, 1.0)
+            if getattr(self, 'is_desktop', False):
+                # 桌面模式战斗轮询不受 adb 成本约束，允许更小间隔
+                interval = limit_in(origin, 0.1, 1.0)
+            else:
+                interval = limit_in(origin, 0.3, 1.0)
             if interval != origin:
                 logger.warning(f'Optimization.CombatScreenshotInterval {origin} is revised to {interval}')
                 self.config.script.optimization.combat_screenshot_interval = interval
@@ -194,12 +190,6 @@ class Screenshot(Adb, DroidCast, Scrcpy, Window, NemuIpc):
         # if self.config.script.device.screenshot_method == 'scrcpy':
         if self.config.script.device.screenshot_method == 'scrcpy':
             interval = 0.1
-
-        # Apply after backend overrides, including scrcpy: throttle recognition
-        # work even when the backend receives video continuously.
-        performance = getattr(self, 'performance', None)
-        if performance is not None:
-            interval = performance.screenshot_interval(interval, combat=combat)
 
         if interval != self._screenshot_interval.limit:
             logger.info(f'Screenshot interval set to {interval}s')
@@ -250,6 +240,9 @@ class Screenshot(Adb, DroidCast, Scrcpy, Window, NemuIpc):
                 logger.critical(f'Resolution not supported: {width}x{height}')
                 logger.critical('Please set emulator resolution to 1280x720')
                 raise RequestHumanTakeover
+
+    def check_screen_size_sample(self):
+        return self.image.shape  == (720, 1280, 3)
 
     def check_screen_black(self):
         if self._screen_black_checked:

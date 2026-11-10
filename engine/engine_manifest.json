@@ -6,5 +6,11 @@
   "python": "3.10",
   "requirements": "requirements.txt",
   "setup": "setup_engine.bat",
-  "description": "阴阳师自动化引擎：任务执行、图像/OCR 服务、桥接 API。由 OAS Studio 控制台调用。"
+  "description": "阴阳师自动化引擎：任务执行、图像/OCR 服务、桥接 API。由 OAS Studio 控制台调用。",
+  "upstream": {
+    "repo": "https://github.com/nearaura/OnmyojiAutoScript",
+    "branch": "dev",
+    "commit": "305defd057fb764e99c25c7506a28a910497519f",
+    "synced_at": "2026-11-10"
+  }
 }

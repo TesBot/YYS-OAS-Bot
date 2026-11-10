@@ -19,7 +19,6 @@ from module.config.config_menu import ConfigMenu
 from module.config.config_model import ConfigModel
 from module.config.config_state import ConfigState
 from module.config.scheduler import TaskScheduler
-from module.config.failed_tasks import FailedTaskStore
 from module.config.utils import *
 from module.notify.notify import Notifier
 
@@ -175,12 +174,6 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
         """
         self.model.write_json(self.config_name, self.model.dict())
 
-    @cached_property
-    def failed_task_store(self):
-        if not isinstance(self.__dict__.get('config_name'), str):
-            return None
-        return FailedTaskStore(self.config_name)
-
     def update_scheduler(self) -> None:
         """
         更新调度器， 设置pending_task and waiting_task
@@ -189,21 +182,14 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
         pending_task = []
         waiting_task = []
         error = []
-        failed_task = []
-        store = self.failed_task_store
-        failures = store.read() if store is not None else {}
         self.scheduler_update_dt = datetime.now()
         for key, value in self.model.dict().items():
             func = Function(key, value)
-            if func.command in failures:
-                func.next_run = max(func.next_run, failures[func.command])
-                failed_task.append(func)
-                continue
             if not func.enable:
                 continue
             if not isinstance(func.next_run, datetime):
                 error.append(func)
-            elif func.next_run <= self.scheduler_update_dt:
+            elif func.next_run < self.scheduler_update_dt:
                 pending_task.append(func)
             else:
                 waiting_task.append(func)
@@ -228,7 +214,6 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
 
         self.pending_task = pending_task
         self.waiting_task = waiting_task
-        self.failed_task = sorted(failed_task, key=operator.attrgetter("next_run"))
 
     def get_next(self) -> Function:
         """
@@ -244,18 +229,10 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
             logger.attr("Task", task)
             return task
 
-        # Due normal work always wins, irrespective of a retry's priority.
-        retry_tasks = [f for f in self.failed_task if f.enable]
-        if retry_tasks and retry_tasks[0].next_run <= self.scheduler_update_dt:
-            self.task = retry_tasks[0]
-            logger.info(f"Retry failed task: {self.task.command}")
-            return self.task
-
-        # Wake at the earliest normal or retry deadline, then select again.
-        future_tasks = sorted(self.waiting_task + retry_tasks, key=operator.attrgetter("next_run"))
-        if future_tasks:
+        # 哪怕是没有任务，也要返回一个任务，这样才能保证调度器正常运行
+        if self.waiting_task:
             logger.info("No task pending")
-            task = copy.deepcopy(future_tasks[0])
+            task = copy.deepcopy(self.waiting_task[0])
             # task.next_run = (task.next_run + self.hoarding).replace(microsecond=0)
             logger.attr("Task", task)
             return task
@@ -270,15 +247,13 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
         :return:
         """
         # 根据调度器更新时间来判断是否有可运行的任务,保证逻辑一致性
-        scheduler_update_dt = self.scheduler_update_dt or datetime.now()
+        scheduler_update_dt = getattr(self, 'scheduler_update_dt', datetime.now())
         running = {}
-        if self.task is not None and self.task.next_run <= scheduler_update_dt:
+        if self.task is not None and self.task.next_run < scheduler_update_dt:
             running = {"name": self.task.command, "next_run": str(self.task.next_run)}
 
         pending = []
-        for p in self.pending_task:
-            if running and p.command == running['name']:
-                continue
+        for p in self.pending_task[1:]:
             item = {"name": p.command, "next_run": str(p.next_run)}
             pending.append(item)
 
@@ -287,8 +262,7 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
             item = {"name": w.command, "next_run": str(w.next_run)}
             waiting.append(item)
 
-        failed = [{"name": f.command, "next_run": str(f.next_run), "enabled": f.enable} for f in self.failed_task]
-        data = {"running": running, "pending": pending, "waiting": waiting, "failed": failed}
+        data = {"running": running, "pending": pending, "waiting": waiting}
         return data
 
     def task_call(self, task: str = None, force_call=True):
@@ -341,12 +315,6 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
             logger.warning(f'No scheduler in {task}')
             return
 
-        # A real failure is timed from the failed attempt's end. Daily reset
-        # settings and an old task start cannot override the GUI retry interval.
-        if success is False and target is None:
-            start_time = datetime.now().replace(microsecond=0)
-            server = False
-
         # 任务开始时间
         if not start_time:
             start_time = datetime.now().replace(microsecond=0)
@@ -360,8 +328,7 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
                 else scheduler.failure_interval
             )
             if isinstance(interval, str):
-                from tasks.Component.config_base import datadelta_validator
-                interval = datadelta_validator(interval)
+                interval = timedelta(interval)
             run.append(start_time + interval)
         # if server is not None:
         #     if server:
@@ -403,29 +370,17 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
             },
             allow_none=False,
         )
-        # logger.info(f"Delay task `{task}` to {next_run} ({kv})")
+        logger.info(f"Delay task `{task}` to {next_run} ({kv})")
 
         # 保证线程安全的
         self.lock_config.acquire()
         try:
             scheduler.next_run = next_run
             self.save()
-            store = getattr(self, 'failed_task_store', None)
-            if store is not None and success is not None:
-                command = ConfigModel.type(task)
-                if success is False:
-                    store.mark(command, next_run)
-                else:
-                    store.clear(command)
         finally:
             self.lock_config.release()
         # 设置
         logger.attr(f'{task}.scheduler.next_run', next_run)
-        # Runtime-only evidence; never serialize this into user configuration.
-        outcomes = getattr(self, '_learning_task_outcomes', None)
-        if outcomes is not None and success is not None:
-            outcomes[task] = bool(success) and outcomes.get(task) is not False
-
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@
 import re
 
 from enum import Enum
+from time import sleep
 from cached_property import cached_property
 from anytree import NodeMixin, RenderTree, PreOrderIter
 from win32api import GetSystemMetrics, SendMessage, MAKELONG, PostMessage
@@ -17,6 +18,9 @@ from win32con import (SRCCOPY, DESKTOPHORZRES, DESKTOPVERTRES, WM_LBUTTONUP,
                       WM_LBUTTONDOWN, WM_ACTIVATE, WA_ACTIVE, MK_LBUTTON,
                       WM_NCHITTEST, WM_SETCURSOR, HTCLIENT, WM_MOUSEMOVE)
 from module.config.config import Config
+from module.config.utils import desktop_mode_enabled
+from module.device.method.desktop_impl import DesktopWindow
+from module.exception import EmulatorNotRunningError
 from module.logger import logger
 
 
@@ -126,7 +130,7 @@ class EmulatorFamily(Enum):
 """""
 # **********************************************************************************************************************
 
-class Handle:
+class Handle(DesktopWindow):
     emulator_list = ['MuMu12',
                      'MuMu',
                      '雷电',
@@ -156,6 +160,8 @@ class Handle:
         'bluestacks_family': ['root_handle_title']
     }
     config: Config = None
+    is_desktop_window: bool = False
+    """是否为桌面客户端模式（script.desktop.enable），桌面分支统一用此标志隔离"""
 
     def __init__(self, config) -> None:
         """
@@ -168,11 +174,25 @@ class Handle:
                 self.config = Config(config, task=None)
             else:
                 self.config = config
-        if not self.config.script.device.handle:
-            logger.info('Handle is empty. oas not use handle')
-            return
-        if self.config.script.device.handle == '':
-            logger.info('Handle is empty. oas not use handle')
+        # 桌面模式：PID 只在运行时存在（不落配置），按「档案状态文件 → 窗口枚举」定位，
+        # 找不到抛错交给 Device.__init__ 自动拉起。须排在 handle 空判之前（桌面模式留空是常态）
+        if desktop_mode_enabled(self.config):
+            self.root_handle_title = ''
+            self.root_handle_num = 0
+            self.root_handle = ''
+            pid, hwnd = self._desktop_locate_window()
+            if pid and hwnd:
+                # 认领的是已存在的窗口，可能早已登录，
+                # 登录态由 find_desktop_login_popup 实测，不能假设未登录
+                self.desktop_bind_pid(pid, hwnd, just_launched=False)
+                logger.info(f'Desktop client window bound: PID={pid}, hwnd={hwnd}')
+                return
+            if pid:
+                logger.info(f'Desktop client process alive (PID={pid}) but window not ready yet')
+            raise EmulatorNotRunningError('Desktop client window not found')
+
+        if not self.config.script.device.handle or self.config.script.device.handle == '':
+            logger.info('Handle is empty, oas not use handle')
             return
 
         # 获取根的句柄
@@ -181,31 +201,38 @@ class Handle:
         self.root_handle = self.config.script.device.handle
         if self.root_handle == "auto":
             logger.info('Handle is auto. oas will find window emulator')
-            self.root_handle_num = self.auto_mumu_handle_num()
-            if self.root_handle_num:
-                self.root_handle_title = handle_num2title(self.root_handle_num)
-            else:
-                window_list = Handle.all_windows()
-                self.root_handle_title = self.auto_handle_title(window_list)
-                if self.root_handle_title:
-                    self.root_handle_num = handle_title2num(self.root_handle_title)
-        elif isinstance(self.root_handle, str):
+            window_list = Handle.all_windows()
+            self.root_handle_title = self.auto_handle_title(window_list)
+            self.root_handle_num = handle_title2num(self.root_handle_title)
+        if isinstance(self.root_handle, str):
             try:
                 self.root_handle_num = int(self.root_handle)
-                logger.info('Handle is handle num. oas use it as root handle num')
+                logger.info('Handle is a number, using it as root handle num')
                 if is_handle_valid(self.root_handle_num):
                     logger.info(f'Handle number {self.root_handle_num} is valid')
                     self.root_handle_title = handle_num2title(self.root_handle_num)
             except ValueError:
-                logger.info('Handle is handle string. oas use it as root handle title')
+                logger.info('Handle is a string, looking up window by title')
                 if handle_title2num(self.root_handle) != 0:
                     self.root_handle_num = handle_title2num(self.root_handle)
                     self.root_handle_title = self.root_handle
         logger.info(f'The root handle title is {self.root_handle_title} and num is {self.root_handle_num}')
 
-        # 获取句柄树
+        # 获取句柄树（加重试，等待子窗口渲染就绪）
         self.root_node = WindowNode(name=self.root_handle_title, num=self.root_handle_num)
         Handle.handle_tree(self.root_handle_num, self.root_node)
+        if not self.root_node.children:
+            logger.info('Window child tree not ready, waiting for emulator to finish initializing')
+            for i in range(9):
+                sleep(1)
+                self.root_node = WindowNode(name=self.root_handle_title, num=self.root_handle_num)
+                Handle.handle_tree(self.root_handle_num, self.root_node)
+                if self.root_node.children:
+                    logger.info(f'Window child tree ready after {i + 2} attempts')
+                    break
+            else:
+                logger.warning('Window child tree still not ready after 10 attempts, will use title-based fallback')
+
         logger.info('Emulator handle structure:')
         for pre, fill, node in RenderTree(self.root_node):
             logger.info("%s%s" % (pre, node.name))
@@ -214,118 +241,9 @@ class Handle:
 
         # 判断是哪一个模拟器 通过句柄树结构
         logger.info(f'Emulator family: {self.emulator_family}')
-
         # window系统的缩放
-        logger.info(f'Your window screen scale rate: {window_scale_rate()}')
-        _ = self.screenshot_handle_num
-        logger.info(f'Screenshot handle num: {self.screenshot_handle_num}')
-        logger.info(f'Emulator screenshot size: {self.screenshot_size}')
-
-    @staticmethod
-    def _mumu_instance_id_from_serial(serial: str) -> int | None:
-        """从 MuMu ADB 序列号推算多开实例编号。"""
-        if not isinstance(serial, str):
-            return None
-        serial = serial.strip()
-        if serial.startswith('127.0.0.1:'):
-            try:
-                port = int(serial.rsplit(':', 1)[1])
-            except (IndexError, ValueError):
-                return None
-            index, offset = divmod(port - 16384 + 16, 32)
-            offset -= 16
-            if 0 <= index < 32 and offset in (-2, -1, 0, 1, 2):
-                return index
-            return None
-        if serial.startswith('emulator-'):
-            try:
-                port = int(serial[9:])
-            except ValueError:
-                return None
-            offset = port - 5554
-            if 0 <= offset < 64 and offset % 2 == 0:
-                return offset // 2
-        return None
-
-    def _find_current_mumu_instance(self):
-        """按当前脚本的 serial 找到对应的 MuMu12/15 实例。"""
-        serial = str(getattr(self, 'serial', '') or '').strip()
-        instance_id = self._mumu_instance_id_from_serial(serial)
-
-        # 优先使用平台层已经按 serial 解析出的目标，避免电脑同时安装
-        # MuMu 和其他模拟器时将 emulator-555x 误判为 MuMu 实例。
-        try:
-            current_instance = getattr(self, 'emulator_instance', None)
-        except Exception as e:
-            logger.warning(f'Handle auto cannot resolve current emulator instance: {e}')
-            current_instance = None
-        if current_instance is not None:
-            if getattr(current_instance, 'type', '') == 'MuMuPlayer12':
-                return current_instance
-            if serial.startswith('emulator-'):
-                return None
-
-        try:
-            instances = list(getattr(self, 'all_emulator_instances', []))
-        except Exception as e:
-            logger.warning(f'Handle auto cannot enumerate emulator instances: {e}')
-            return None
-
-        mumu_instances = [
-            instance for instance in instances
-            if getattr(instance, 'type', '') == 'MuMuPlayer12'
-        ]
-        for instance in mumu_instances:
-            if getattr(instance, 'serial', '') == serial:
-                return instance
-
-        if instance_id is not None:
-            for instance in mumu_instances:
-                if getattr(instance, 'MuMuPlayer12_id', None) == instance_id:
-                    return instance
-        return None
-
-    def auto_mumu_handle_num(self) -> int:
-        """
-        通过当前脚本对应的 MuMu 实例实时查询根窗口句柄。
-
-        Returns:
-            int: 有效 HWND；无法确认当前设备为 MuMu 时返回 0，并交由旧逻辑回退。
-        """
-        instance = self._find_current_mumu_instance()
-        if instance is None:
-            return 0
-
-        try:
-            from module.device.platform2.handlers import get_handler
-
-            handler = get_handler(instance.type)
-            if handler is None:
-                return 0
-            player_info = handler.query_player_info(instance, self)
-        except Exception as e:
-            logger.warning(f'Handle auto failed to query MuMu instance info: {e}')
-            return 0
-
-        hwnd = player_info.get('main_wnd') if isinstance(player_info, dict) else None
-        if isinstance(hwnd, str):
-            try:
-                hwnd = int(hwnd, 16)
-            except ValueError:
-                hwnd = 0
-        if not isinstance(hwnd, int) or hwnd <= 0 or not is_handle_valid(hwnd):
-            logger.warning(
-                'Handle auto got invalid MuMu main_wnd: '
-                f'serial={getattr(self, "serial", "")}, main_wnd={hwnd}'
-            )
-            return 0
-
-        logger.info(
-            'Handle auto matched MuMu instance: '
-            f'serial={getattr(self, "serial", "")}, '
-            f'name={getattr(instance, "name", "")}, hwnd={hwnd}'
-        )
-        return hwnd
+        logger.info(f'Window screen scale rate: {window_scale_rate()}')
+        # screenshot_handle_num 和 screenshot_size 延迟到首次截屏时按需求值，不在初始化时预计算
 
     @staticmethod
     def all_windows() -> list:
@@ -338,7 +256,6 @@ class Handle:
         def enum_windows_callback(hwnd, windows):
             window_text = GetWindowText(hwnd)
             windows.append(window_text)
-            return True
 
         windows = []
         EnumWindows(enum_windows_callback, windows)
@@ -352,14 +269,13 @@ class Handle:
         :return:
         """
         if windows is None:
-            logger.error("handle_auto not get all wnidow")
+            logger.error("auto_handle_title: windows list is None")
 
         emu_list = []
         for window_title in windows:
             for item in Handle.emulator_list:
                 if window_title.find(item) != -1:
                     emu_list.append(window_title)
-                    break
 
         if not len(emu_list):
             logger.error('Can not find emulator handle, please check your emulator is running')
@@ -373,13 +289,8 @@ class Handle:
         
         # MuMu5.0更新，窗体标题改动: 'MuMu模拟器','MuMuNxDevice','MuMu安卓设备'
         # 如果没有匹配上旧版本，尝试匹配MuMu5.0窗口名                                                                  
-        if emulator_title == '':
-            mumu_android_titles = [
-                title for title in emu_list
-                if title.startswith('MuMu安卓设备')
-            ]
-            if mumu_android_titles:
-                emulator_title = mumu_android_titles[0]
+        if emulator_title == '' and 'MuMu安卓设备' in emu_list:
+            emulator_title = 'MuMu安卓设备'
 
         if len(emu_list) > 1 and emulator_title == '':
             logger.warning(f'Find more than one emulator handle, oas will use the first one {emu_list[0]}')
@@ -388,7 +299,7 @@ class Handle:
         if len(emu_list) == 1:
             emulator_title = emu_list[0]
 
-        logger.info(f'Handle auto seclect to find {emulator_title} and use it as root_title')
+        logger.info(f'Auto-detected emulator window: {emulator_title}')
         return emulator_title
 
     @staticmethod
@@ -458,6 +369,8 @@ class Handle:
         截屏的句柄其实并不是根句柄
         :return:  出错返回None
         """
+        if getattr(self, 'is_desktop_window', False):
+            return self.root_handle_num
         if self.emulator_family == EmulatorFamily.FAMILY_MUMU:
             # 使用正则匹配12 来判定是不是mumu12这并不是一个好的方法
             name = self.root_node.children[0].name
@@ -501,6 +414,9 @@ class Handle:
         2023.7.1 在高缩放的设备上应该输出1280X720
         :return:
         """
+        if getattr(self, 'is_desktop_window', False):
+            # 桌面模式固定输出 1280x720（物理目标，与资产 1:1），位图由截图方法缩放得到
+            return 1280, 720
         winRect = GetWindowRect(self.screenshot_handle_num)
         scale_rate = window_scale_rate()
         width_before: int = winRect[2] - winRect[0]  # 右x-左x

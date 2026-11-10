@@ -6,7 +6,6 @@ from filelock import FileLock
 
 from deploy.config import DeployConfig as _DeployConfig
 from deploy.utils import *
-from deploy.package_release import apply_fixed_package_config
 
 
 def poor_yaml_read_with_lock(file):
@@ -37,7 +36,6 @@ class DeployConfig(_DeployConfig):
         """
         self.config = poor_yaml_read_with_lock(DEPLOY_TEMPLATE)
         self.config.update(poor_yaml_read_with_lock(self.file))
-        apply_fixed_package_config(self.config)
 
         for key, value in self.config.items():
             if hasattr(self, key):

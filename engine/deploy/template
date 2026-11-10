@@ -3,11 +3,11 @@ Deploy:
     # URL of AzurLaneAutoScript repository
     # [CN user] Use 'https://gitee.com/lmeszinc/azur-lane-auto-script-mirror' for faster and more stable download
     # [Other] Use 'https://github.com/LmeSzinc/AzurLaneAutoScript'
-    Repository: https://github.com/tomoe1-1/OAS-tomoe.git
+    Repository: https://gitcode.com/OnmyojiAutoScript/OnmyojiAutoScript.git
     # Branch of Alas
     # [Developer] Use 'dev', 'app', etc, to try new features
     # [Other] Use 'master', the stable branch
-    Branch: self
+    Branch: master
     # Filepath of git executable `git.exe`
     # [Easy installer] Use './toolkit/Git/mingw64/bin/git.exe'
     # [Other] Use you own git
@@ -18,7 +18,7 @@ Deploy:
     GitProxy: null
     # Update Alas at startup
     # [In most cases] Use true
-    AutoUpdate: false
+    AutoUpdate: true
     # Whether to keep local changes during update
     # User settings, logs and screenshots will be kept, no mather this is true or false
     # [Developer] Use true, if you modified the code
@@ -36,7 +36,7 @@ Deploy:
     PypiMirror: https://pypi.tuna.tsinghua.edu.cn/simple
     # Install dependencies at startup
     # [In most cases] Use true
-    InstallDependencies: false
+    InstallDependencies: true
     # Path to requirements.txt
     # [In most cases] Use 'requirements.txt'
     # [In AidLux] Use './deploy/AidLux/{version}/requirements.txt', version is default to 0.92
@@ -57,62 +57,34 @@ Deploy:
     #   3. Brute-force connect to all available emulator instances
     # [In most cases] Use true
     # [In few cases] Use false, if you have other programs using ADB.
-    ReplaceAdb: false
+    ReplaceAdb: true
     # Brute-force connect to all available emulator instances
     # [In most cases] Use true
-    AutoConnect: false
+    AutoConnect: true
     # Re-install uiautomator2
     # [In most cases] Use true
-    InstallUiautomator2: false
+    InstallUiautomator2: true
 
   Ocr:
-    # Run OCR as a mandatory service. All OCR recognition goes through RPC.
+    # Run Ocr as a service, can reduce memory usage by not import mxnet everytime you start an alas instance
 
+    # Whether to use ocr server
+    # [Default] false
+    UseOcrServer: false
     # Whether to start ocr server when start GUI
-    # [Default] true
-    StartOcrServer: true
+    # [Default] false
+    StartOcrServer: false
     # Port of ocr server runs by GUI
-    # [Default] 22368
-    OcrServerPort: 22368
+    # [Default] 22268
+    OcrServerPort: 22268
     # Address of ocr server for alas instance to connect
-    # [Default] 127.0.0.1:22368
-    OcrClientAddress: 127.0.0.1:22368
-    # OCR server worker count, 0 means auto detect
-    # [Default] 0
-    OcrServerWorkerCount: 0
-
-  Image:
-    # Run image recognition as a service. This service is mandatory and all image rules use it.
-
-    # Whether to auto start image server when startup
-    # [Default] true
-    StartImageServer: true
-    # Port of image server
-    # [Default] 22369
-    ImageServerPort: 22369
-    # Address of image server for script instances to connect
-    # [Default] 127.0.0.1:22369
-    ImageClientAddress: 127.0.0.1:22369
-    # Template cache expire seconds
-    # [Default] 3600
-    ImageTemplateCacheExpireSeconds: 3600
-    # Template cache max item count
-    # [Default] 200
-    ImageTemplateCacheMaxCount: 200
-    # Frame cache expire seconds
-    # [Default] 10.0
-    ImageFrameCacheExpireSeconds: 10.0
-    # Frame cache max item count
-    # [Default] 66
-    ImageFrameCacheMaxCount: 66
-    # Image server worker count, 0 means auto detect
-    # [Default] 0
-    ImageServerWorkerCount: 0
+    # [Default] 127.0.0.1:22268
+    OcrClientAddress: 127.0.0.1:22268
 
   Update:
     # Use auto update and builtin updater feature
     # This may cause problem https://github.com/LmeSzinc/AzurLaneAutoScript/issues/876
-    EnableReload: false
+    EnableReload: true
     # Check update every X minute
     # [Disable] 0
     # [Default] 5
@@ -149,11 +121,11 @@ Deploy:
     # --host. Host to listen
     # [Use IPv6] '::'
     # [In most cases] Default to '0.0.0.0'
-    WebuiHost: 127.0.0.1
+    WebuiHost: 0.0.0.0
     # --port. Port to listen
     # You will be able to access webui via `http://{host}:{port}`
     # [In most cases] Default to 22267
-    WebuiPort: 22388
+    WebuiPort: 22267
     # Language to use on web ui
     # 'zh-CN' for Chinese simplified
     # 'en-US' for English

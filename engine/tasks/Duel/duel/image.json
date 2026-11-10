@@ -6,7 +6,6 @@
     "roiBack": "785,259,115,119",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "点击阵容"
   },
   {
@@ -16,7 +15,6 @@
     "roiBack": "1082,85,38,41",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "一键切换所有的御魂"
   },
   {
@@ -26,7 +24,6 @@
     "roiBack": "1123,537,154,177",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "description"
   },
   {
@@ -36,7 +33,6 @@
     "roiBack": "1118,553,155,149",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "战斗带保护的"
   },
   {
@@ -46,7 +42,6 @@
     "roiBack": "2,97,93,96",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "自动上阵"
   },
   {
@@ -56,7 +51,6 @@
     "roiBack": "778,476,49,78",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "主界面的感叹号"
   },
   {
@@ -66,7 +60,6 @@
     "roiBack": "1127,541,100,100",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "准备"
   },
   {
@@ -76,7 +69,6 @@
     "roiBack": "433,76,100,100",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "胜利"
   },
   {
@@ -86,7 +78,6 @@
     "roiBack": "422,66,100,100",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "失败"
   },
   {
@@ -96,7 +87,6 @@
     "roiBack": "600,24,84,85",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "战"
   },
   {
@@ -106,7 +96,6 @@
     "roiBack": "551,433,185,67",
     "method": "Template matching",
     "threshold": 0.75,
-    "profile": "Default",
     "description": "名士的星星"
   },
   {
@@ -116,7 +105,6 @@
     "roiBack": "199,606,222,76",
     "method": "Template matching",
     "threshold": 0.75,
-    "profile": "Default",
     "description": "名士专属"
   },
   {
@@ -126,7 +114,6 @@
     "roiBack": "1114,547,163,172",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "练"
   },
   {
@@ -136,7 +123,6 @@
     "roiBack": "1114,547,163,172",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "练2"
   },
   {
@@ -146,7 +132,6 @@
     "roiBack": "439,278,90,88",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "斗技模式（普通）"
   },
   {
@@ -156,7 +141,6 @@
     "roiBack": "1119,566,154,143",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "活动的战斗按钮"
   },
   {
@@ -166,7 +150,6 @@
     "roiBack": "1122,545,114,116",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "禁用"
   },
   {
@@ -176,7 +159,6 @@
     "roiBack": "14,12,43,41",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "左上角的退出"
   },
   {
@@ -186,77 +168,33 @@
     "roiBack": "590,14,100,100",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "ban选界面"
   },
   {
     "itemName": "duel_honor",
     "imageName": "duel_duel_honor.png",
-    "roiFront": "186,633,20,20",
-    "roiBack": "175,631,242,47",
+    "roiFront": "211,636,20,20",
+    "roiBack": "200,601,130,100",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
     "description": "斗技荣誉图标"
   },
   {
-    "itemName": "d_win_share",
-    "imageName": "d_win_share.png",
-    "roiFront": "1123,608,82,73",
-    "roiBack": "1123,608,82,73",
+    "itemName": "d_try",
+    "imageName": "duel_d_try.png",
+    "roiFront": "667,356,111,30",
+    "roiBack": "667,356,111,30",
     "method": "Template matching",
     "threshold": 0.8,
-    "profile": "Default",
-    "description": "胜利分享"
+    "description": "队伍试用"
   },
   {
-    "itemName": "ban_ensure",
-    "imageName": "duel_ban_ensure.png",
-    "roiFront": "1123,578,111,46",
-    "roiBack": "1123,578,111,46",
-    "method": "Template matching",
+    "itemName": "d_victory_share",
+    "imageName": "duel_d_victory_share.png",
+    "roiFront": "1100,580,90,120",
+    "roiBack": "1080,560,130,160",
+    "method": "Masked template matching",
     "threshold": 0.8,
-    "profile": "Default",
-    "description": ""
-  },
-  {
-    "itemName": "duel_celeb_honor",
-    "imageName": "duel_duel_celeb_honor.png",
-    "roiFront": "297,633,20,20",
-    "roiBack": "172,632,249,26",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "profile": "Default",
-    "description": ""
-  },
-  {
-    "itemName": "duel_main_uesless_message",
-    "imageName": "duel_duel_main_uesless_message.png",
-    "roiFront": "526,224,222,56",
-    "roiBack": "521,219,232,66",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "profile": "Default",
-    "description": "斗技入口附属消息页"
-  },
-  {
-    "itemName": "white_dog",
-    "imageName": "duel_white_dog.png",
-    "roiFront": "388,327,70,62",
-    "roiBack": "308,254,215,249",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "profile": "Default",
-    "description": "小白弹窗"
-  },
-  {
-    "itemName": "exit_waiting",
-    "imageName": "duel_exit_waiting.png",
-    "roiFront": "569,587,139,57",
-    "roiBack": "564,582,149,67",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "profile": "More",
-    "description": "取消匹配按键"
+    "description": "斗技胜利MVP分享页右下分享按钮"
   }
 ]

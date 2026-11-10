@@ -39,13 +39,12 @@ def random_port(port_range):
         return new_port
 
 
-def recv_all(stream, chunk_size=4096, recv_interval=0.000, total_timeout=30) -> bytes:
+def recv_all(stream, chunk_size=4096, recv_interval=0.000) -> bytes:
     """
     Args:
         stream:
         chunk_size:
         recv_interval (float): Default to 0.000, use 0.001 if receiving as server
-        total_timeout (float): Total receive budget, including continuously arriving data.
 
     Returns:
         bytes:
@@ -61,17 +60,12 @@ def recv_all(stream, chunk_size=4096, recv_interval=0.000, total_timeout=30) -> 
 
     try:
         fragments = []
-        deadline = time.monotonic() + total_timeout
         while 1:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise AdbTimeout('adb total read timeout')
-            stream.settimeout(min(10, remaining))
             chunk = stream.recv(chunk_size)
             if chunk:
                 fragments.append(chunk)
                 # See https://stackoverflow.com/questions/23837827/python-server-program-has-high-cpu-usage/41749820#41749820
-                time.sleep(min(recv_interval, max(0, deadline - time.monotonic())))
+                time.sleep(recv_interval)
             else:
                 break
         return remove_shell_warning(b''.join(fragments))

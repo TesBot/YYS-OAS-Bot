@@ -1,6 +1,5 @@
 from module.atom.image import RuleImage
 from module.atom.click import RuleClick
-from module.atom.scatter import RuleScatter
 from module.atom.long_click import RuleLongClick
 from module.atom.swipe import RuleSwipe
 from module.atom.ocr import RuleOcr
@@ -23,15 +22,13 @@ class FrogBossAssets:
 	# 右边输了 
 	I_FAILURE_RIGHT = RuleImage(roi_front=(1097,303,100,100), roi_back=(1029,256,224,199), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_failure_right.png")
 	# 开始下一局 
-	I_NEXT_COMPETITION = RuleImage(roi_front=(783,492,28,22), roi_back=(0,0,1280,720), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_next_competition.png")
+	I_NEXT_COMPETITION = RuleImage(roi_front=(783,492,28,22), roi_back=(692,437,157,147), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_next_competition.png")
 	# 30万金币 
 	I_GOLD_30 = RuleImage(roi_front=(862,499,78,76), roi_back=(831,441,147,187), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_gold_30.png")
 	# 确认竞猜 
 	I_BET_SURE = RuleImage(roi_front=(1025,402,100,100), roi_back=(972,340,200,226), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_bet_sure.png")
-	# 30万金币档位选中边框 
-	I_GOLD_30_CHECK = RuleImage(roi_front=(832,569,28,65), roi_back=(822,559,48,85), threshold=0.88, method="Template matching", file="./tasks/FrogBoss/fb/fb_gold_30_check.png")
 	# 获胜奖励说明弹窗中的竞猜金币 
-	I_GOLD_30_REWARD_COINS = RuleImage(roi_front=(513,196,58,53), roi_back=(495,195,104,111), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_gold_30_reward_coins.png")
+	I_GOLD_30_CHECK = RuleImage(roi_front=(513,196,58,53), roi_back=(495,195,104,111), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_gold_30_check.png")
 	# description 
 	I_BETTED = RuleImage(roi_front=(1093,313,125,54), roi_back=(207,240,1058,312), threshold=0.8, method="Template matching", file="./tasks/FrogBoss/fb/fb_betted.png")
 	# description 

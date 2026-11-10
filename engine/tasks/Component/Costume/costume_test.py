@@ -20,12 +20,13 @@ class ScriptTask(GeneralBattle, GameUi, SwitchSoul, PetsAssets, ):
         self.ui_click(self.I_TOWN_GOTO_MAIN, self.I_CHECK_MAIN)
         # 探索测试
         self.ui_click(self.I_MAIN_GOTO_EXPLORATION, self.I_CHECK_EXPLORATION)
-        self.ui_click(self.I_UI_BACK_BLUE, self.I_CHECK_MAIN)
+        self.ui_click(self.I_UI_BACK_YELLOW, self.I_CHECK_MAIN)
         # 召唤测试
         self.ui_click(self.I_MAIN_GOTO_SUMMON, self.I_CHECK_SUMMON)
-        self.ui_click(self.I_UI_BACK_YELLOW, self.I_CHECK_MAIN)
+        self.ui_click(self.I_SUMMON_GOTO_MAIN, self.I_CHECK_MAIN)
         # 宠物屋测试
         self.ui_click(self.I_PET_HOUSE, self.I_PET_CLAW)
+        self.ui_click(self.I_PET_EXIT, self.I_CHECK_MAIN)
         logger.info('Test Success')
 
 

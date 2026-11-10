@@ -1,12 +1,10 @@
 # This Python file uses the following encoding: utf-8
 # copy from alas https://github.com/LmeSzinc/AzurLaneAutoScript
 import copy
-import subprocess
 from typing import Optional, Union
 
 from deploy.logger import logger
 from deploy.utils import *
-from deploy.package_release import apply_fixed_package_config
 
 
 class ExecutionError(Exception):
@@ -36,20 +34,10 @@ class ConfigModel:
     InstallUiautomator2: bool = True
 
     # Ocr
-    StartOcrServer: bool = True
+    UseOcrServer: bool = False
+    StartOcrServer: bool = False
     OcrServerPort: int = 22268
     OcrClientAddress: str = "127.0.0.1:22268"
-    OcrServerWorkerCount: int = 0
-
-    # Image
-    StartImageServer: bool = True
-    ImageServerPort: int = 22269
-    ImageClientAddress: str = "127.0.0.1:22269"
-    ImageTemplateCacheExpireSeconds: int = 3600
-    ImageTemplateCacheMaxCount: int = 200
-    ImageFrameCacheExpireSeconds: float = 10.0
-    ImageFrameCacheMaxCount: int = 66
-    ImageServerWorkerCount: int = 0
 
     # Update
     EnableReload: bool = True
@@ -100,18 +88,14 @@ class DeployConfig(ConfigModel):
         logger.info(f"Rest of the configs are the same as default")
 
     def read(self):
-        self.config = poor_yaml_read(DEPLOY_TEMPLATE)
+        self.config_template = poor_yaml_read(DEPLOY_TEMPLATE)
+        self.config = copy.deepcopy(self.config_template)
+        self.config.update(poor_yaml_read(self.file))
+
         # https://e.coding.net/onmyojiautoscript/oas/OnmyojiAutoScript.git
         # 2025.09.01 腾讯coding跑路了
         if self.config["Repository"].startswith("https://e.coding.net/"):
             self.config["Repository"] = "https://gitcode.com/OnmyojiAutoScript/OnmyojiAutoScript.git"
-        self.config_template = copy.deepcopy(self.config)
-        self.config.update(poor_yaml_read(self.file))
-        apply_fixed_package_config(self.config)
-        unknown_keys = [key for key in list(self.config.keys()) if not hasattr(self, key)]
-        for key in unknown_keys:
-            logger.warning(f"Ignore deprecated deploy config key: {key}")
-            self.config.pop(key, None)
 
         for key, value in self.config.items():
             if hasattr(self, key):
@@ -159,10 +143,7 @@ class DeployConfig(ConfigModel):
         if not output:
             command = command + ' >nul 2>nul'
         logger.info(command)
-        error_code = subprocess.run(
-            command, shell=True,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-        ).returncode
+        error_code = os.system(command)
         if error_code:
             if allow_failure:
                 logger.info(f"[ allowed failure ], error_code: {error_code}")
@@ -185,3 +166,4 @@ class DeployConfig(ConfigModel):
             "and re-open Alas.exe"
         )
         logger.info("Take the screenshot of entire window if you need help")
+

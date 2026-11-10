@@ -5,8 +5,9 @@ from time import sleep
 from datetime import timedelta, datetime, time
 from cached_property import cached_property
 
-from module.exception import TaskEnd, TaskRecoveryFailed
+from module.exception import TaskEnd
 from module.logger import logger
+from module.base.timer import Timer
 
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import page_main, page_hunt, page_hunt_kirin, page_shikigami_records
@@ -15,7 +16,6 @@ from tasks.Component.GeneralBattle.config_general_battle import GeneralBattleCon
 from tasks.Component.GeneralInvite.general_invite import GeneralInvite
 from tasks.Component.SwitchSoul.switch_soul import SwitchSoul
 from tasks.Hunt.assets import HuntAssets
-from tasks.Hunt.kirin_assist import kirin_assist_visible, confirm_kirin_assist
 
 
 class ScriptTask(GameUi, GeneralBattle, GeneralInvite, SwitchSoul, HuntAssets):
@@ -92,88 +92,39 @@ class ScriptTask(GameUi, GeneralBattle, GeneralInvite, SwitchSoul, HuntAssets):
                 return True
 
     def plan_tomorrow_hunt(self):
-        next_time = (self.con_time.kirin_time if self.tomorrow_kirin_day
-                     else self.con_time.netherworld_time)
-        target = (datetime.now() + timedelta(days=1)).replace(
-            hour=next_time.hour, minute=next_time.minute, second=next_time.second,
-            microsecond=0)
-        # Keep the configured hunt time instead of the generic server reset.
-        self.set_next_run(task='Hunt', server=False, target=target)
-        outcomes = getattr(self.config, '_learning_task_outcomes', None)
-        if outcomes is not None:
-            outcomes['hunt'] = True
-
-    def _finish_already_challenged(self, marker):
-        self._ui_verify(lambda: self.appear(marker), [])
-        logger.info('Hunt already challenged today; mark completed, not failed')
-        self.plan_tomorrow_hunt()
-        # Close/navigation is handled by the scheduler after successful completion.
-        raise TaskEnd('Hunt')
+        # 安排次日狩猎战，便于复用
+        if self.tomorrow_kirin_day:
+            logger.info('Tomorrow is the Kirin day')
+            self.custom_next_run(task='Hunt', custom_time=self.con_time.kirin_time, time_delta=1)
+        else:
+            logger.info('Tomorrow is the Netherworld day')
+            self.custom_next_run(task='Hunt', custom_time=self.con_time.netherworld_time, time_delta=1)
 
     def kirin(self):
         logger.hr('kirin', 2)
         while 1:
             self.screenshot()
-            # The foreground modal must precede all dimmed background matches.
-            if kirin_assist_visible(self):
-                confirm_kirin_assist(self)
-                break
-            if self.appear(self.I_KIRIN_END):
-                self._finish_already_challenged(self.I_KIRIN_END)
             if self.appear(self.I_PREPARE_HIGHLIGHT):
                 break
-            if self.appear_then_click(self.I_UI_CONFIRM, interval=0.9):
+            if self.appear_then_click(self.I_UI_CONFIRM, interval=0.9)\
+                    or self.appear_then_click(self.I_UI_CONFIRM_SAMLL, interval=0.9):
                 continue
             if self.appear_then_click(self.I_KIRIN_CHALLAGE, interval=1.5):
                 continue
+            if self.appear_then_click(self.I_KIRIN_START_CHALLAGE, interval=2.5):
+                continue
+            if self.appear(self.I_KIRIN_END):
+                # 今日已挑战
+                logger.warning('Today have already challenged the Kirin')
+                self.ui_click_until_disappear(self.I_UI_BACK_YELLOW)
+                return
         logger.info('Start battle')
-        self.run_general_battle(
-            self.config.hunt.kirin_battle_config,
-            battle_key="hunt_kirin",
-            exit_matcher=page_hunt_kirin,
-        )
-
-    def netherworld_start_confirm_visible(self):
-        # Both rules must match the same fresh image; no generic gold-button match.
-        return self.appear(self.I_NW_START_Q) and self.appear(self.I_NW_START_CONFIRM)
-
-    def confirm_netherworld_start(self):
-        generation = self.device._escape_generation
-        self._ui_verify(self.netherworld_start_confirm_visible, [], timeout=5)
-        self.screenshot()
-        if self.device._escape_generation != generation:
-            raise TaskRecoveryFailed('Netherworld start interrupted before confirmation')
-        if not self.netherworld_start_confirm_visible():
-            raise TaskRecoveryFailed('Netherworld start confirmation changed before input')
-        if not self.appear_then_click(self.I_NW_START_Q, action=self.C_NW_START_CONFIRM):
-            raise TaskRecoveryFailed('Netherworld start confirmation input was blocked')
-        if self.device._escape_generation != generation:
-            raise TaskRecoveryFailed('Netherworld start interrupted after confirmation')
-        self._ui_verify(lambda: not self.netherworld_start_confirm_visible(),
-                        [self.I_NW_START_Q, self.C_NW_START_CONFIRM], timeout=15)
-        # Modal disappearance alone does not prove a battle has started.
-        self._ui_verify(lambda: self.is_in_room(False), [], timeout=15)
-        logger.info('Netherworld starting-round confirmation reached battle room')
-
-    def open_netherworld_challenge(self):
-        generation = self.device._escape_generation
-        if not self.appear_then_click(self.I_NW_CHALLAGE):
-            raise TaskRecoveryFailed('Netherworld challenge input was blocked')
-        if self.device._escape_generation != generation:
-            raise TaskRecoveryFailed('Netherworld challenge interrupted after input')
-        self._ui_verify(lambda: self.netherworld_start_confirm_visible()
-                        or self.appear(self.I_UI_CONFIRM) or self.is_in_room(False),
-                        [self.I_NW_CHALLAGE], timeout=15)
+        self.run_general_battle(self.config.hunt.kirin_battle_config)
 
     def netherworld(self):
         logger.hr('netherworld', 2)
         while 1:
             self.screenshot()
-            if self.netherworld_start_confirm_visible():
-                self.confirm_netherworld_start()
-                continue
-            if self.appear(self.I_NW_DONE):
-                self._finish_already_challenged(self.I_NW_DONE)
             if self.is_in_room(False):
                 self.screenshot()
                 if not self.appear(self.I_FIRE):
@@ -185,15 +136,54 @@ class ScriptTask(GameUi, GeneralBattle, GeneralInvite, SwitchSoul, HuntAssets):
                 continue
             if self.appear_then_click(self.I_UI_CONFIRM, interval=0.9):
                 continue
-            if self.appear(self.I_NW_CHALLAGE):
-                self.open_netherworld_challenge()
+            if self.appear_then_click(self.I_NW_CHALLAGE, interval=1.5):
                 continue
+            if self.appear(self.I_NW_DONE):
+                # 今日已挑战
+                logger.warning('Today have already challenged the Netherworld')
+                self.ui_click_until_disappear(self.I_UI_BACK_RED)
+                return
         logger.info('Start battle')
-        self.run_general_battle(
-            self.config.hunt.netherworld_battle_config,
-            battle_key="hunt_netherworld",
-            exit_matcher=page_hunt,
-        )
+        self.run_general_battle(self.config.hunt.netherworld_battle_config)
+
+    def battle_wait(self, random_click_swipt_enable: bool) -> bool:
+        """
+        重写，
+        阴界之门： 胜利后回到狩猎战的主界面
+        麒麟： 胜利后回到麒麟的主界面
+        :param random_click_swipt_enable:
+        :return:
+        """
+        # if self.kirin_day:
+        #     return super().battle_wait(random_click_swipt_enable)
+
+        # 阴界之门
+        self.device.stuck_record_add('BATTLE_STATUS_S')
+        self.device.click_record_clear()
+        # 战斗过程 随机点击和滑动 防封
+        logger.info("Start battle process")
+        stuck_timer = Timer(180)
+        stuck_timer.start()
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_WIN):
+                logger.info('Battle win')
+                self.ui_click_until_disappear(self.I_WIN)
+                return True
+            # 如果出现失败 就点击，返回False
+            if self.appear(self.I_FALSE, threshold=0.8):
+                logger.info("Battle result is false")
+                self.ui_click_until_disappear(self.I_FALSE)
+                return False
+            if self.appear_then_click(self.I_PREPARE_HIGHLIGHT, interval=1.5):
+                logger.info('Netherworld click prepare after maybe failed')
+                self.device.stuck_record_add('BATTLE_STATUS_S')
+                continue
+            # 如果三分钟还没打完，再延长五分钟
+            if stuck_timer and stuck_timer.reached():
+                stuck_timer = None
+                self.device.stuck_record_clear()
+                self.device.stuck_record_add('BATTLE_STATUS_S')
 
 
 if __name__ == '__main__':
@@ -205,3 +195,4 @@ if __name__ == '__main__':
     t.screenshot()
 
     t.run()
+

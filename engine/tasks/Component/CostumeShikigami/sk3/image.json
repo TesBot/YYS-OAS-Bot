@@ -63,15 +63,6 @@
     "description": "description"
   },
   {
-    "itemName": "sou_switch_sure_3",
-    "imageName": "sk3_sou_switch_sure_3.png",
-    "roiFront": "668,401,180,61",
-    "roiBack": "668,401,180,61",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "description": "description"
-  },
-  {
     "itemName": "sou_check_in_3",
     "imageName": "sk3_sou_check_in_3.png",
     "roiFront": "268,74,50,49",
@@ -174,7 +165,7 @@
     "itemName": "st_replace_3",
     "imageName": "sk3_st_replace_3.png",
     "roiFront": "860,168,100,100",
-    "roiBack": "872,186,78,63",
+    "roiBack": "860,168,100,100",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "更换"

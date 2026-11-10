@@ -43,30 +43,3 @@
    **在测试之前你需要打开一次 OASX 修改你对应的庭院皮肤的选项**
 
 8. 完事啦？？？哪有那么简单，你没有发现打开 OASX 的时候发现你的选项还是 `costume_main_xxx` 这种吗。你还需要添加一个翻译，[点击这儿](https://runhey.github.io/OnmyojiAutoScript-website/docs/development/user-option#7翻译)
-
-## 动画庭院的处理（多帧）
-
-有些庭院的判定部件和按钮是**带动画**的，单张模板会随帧跳动而失配。这类庭院要为每组 assets 采 3 帧（`_a` / `_b` / `_c`，顺序即匹配优先级），并在 `costume_base.py` 里把 value 写成**帧名列表**：
-
-```python
-main_costume_model[MainType.COSTUME_MAIN_18] = {
-    'I_CHECK_MAIN': ['I_CHECK_MAIN_18_A', 'I_CHECK_MAIN_18_B', 'I_CHECK_MAIN_18_C'],
-    # ... 其余四组同理
-}
-```
-
-模型里写列表后，`_activate_main_costume()` 会自动走 `RuleGif.attach_to()` 把多帧匹配**原地挂载**到目标规则上（不换对象，持有引用的 Page 立即生效）；切回单帧庭院时会先 `RuleGif.detach_from()` 摘掉，避免残留的 GIF 方法继续按旧帧匹配。所以单帧庭院照旧按第 6 步写字符串即可，两种写法可以共存。
-
-**每一帧都要有自己的 `roi_front`**：帧是从不同位置裁的，模板像素尺寸必须等于该帧 `roi_front` 的宽高，否则匹配直接崩（`tests/test_costume_main18.py` 会校验这一点）。
-
-### 编号注意事项
-
-本库的庭院编号与上游 `runhey/OnmyojiAutoScript` **错位一格**：
-
-| 编号 | 本库 | runhey 上游 |
-|---|---|---|
-| 16 | 琦梦茨庭 | 狐栖归处 |
-| 17 | 狐栖归处 | 玉岚狐庭 |
-| 18 | 玉岚狐庭 | — |
-
-也就是说上游同等素材在本库要**顺延一个编号**，不能直接按上游编号放，否则会拿 A 皮肤的模板当 B 皮肤用。目前本库所有庭院模板都是在自己的设备上重新截的（与上游无一字节相同），所以从上游取素材时**坐标必须连同模板一起搬**，不要只搬图。

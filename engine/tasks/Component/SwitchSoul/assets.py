@@ -42,8 +42,6 @@ class SwitchSoulAssets:
 	I_SOU_SWITCH_3 = RuleImage(roi_front=(978,455,25,26), roi_back=(962,442,52,48), threshold=0.8, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_sou_switch_3.png")
 	# description 
 	I_SOU_SWITCH_4 = RuleImage(roi_front=(978,603,25,22), roi_back=(962,592,53,34), threshold=0.8, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_sou_switch_4.png")
-	# description 
-	I_SOU_SWITCH_SURE = RuleImage(roi_front=(668,401,180,61), roi_back=(668,401,180,61), threshold=0.8, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_sou_switch_sure.png")
 	# 用于判断是否在式神录里面 
 	I_SOU_CHECK_IN = RuleImage(roi_front=(269,69,50,49), roi_back=(269,69,50,49), threshold=0.8, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_sou_check_in.png")
 	# description 
@@ -66,6 +64,8 @@ class SwitchSoulAssets:
 	I_SOU_CLICK_PRESENT = RuleImage(roi_front=(978,304,25,26), roi_back=(965,142,48,480), threshold=0.9, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_sou_click_present.png")
 	# 误触点到式神检查 
 	I_CHECK_BLOCK = RuleImage(roi_front=(572,408,137,49), roi_back=(572,408,137,49), threshold=0.8, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_check_block.png")
+	# 通用进入式神录 
+	I_GOTO_SHIKIGAMI_COMMON = RuleImage(roi_front=(1037,567,36,36), roi_back=(617,503,487,134), threshold=0.8, method="Template matching", file="./tasks/Component/SwitchSoul/ss/ss_goto_shikigami_common.png")
 
 
 	# Ocr Rule Assets
@@ -81,7 +81,7 @@ class SwitchSoulAssets:
 	# 列表的向下滑动 
 	S_SS_GROUP_SWIPE_DOWN = RuleSwipe(roi_front=(1155,388,21,22), roi_back=(1152,177,22,24), mode="default", name="ss_group_swipe_down")
 	# 阵容向上滑动 
-	S_SS_TEAM_SWIPE_UP = RuleSwipe(roi_front=(782,406,21,21), roi_back=(793,356,21,21), mode="default", name="ss_team_swipe_up")
+	S_SS_TEAM_SWIPE_UP = RuleSwipe(roi_front=(720,439,21,21), roi_back=(717,308,21,21), mode="default", name="ss_team_swipe_up")
 	# 阵容向上滑动 
 	S_SS_TEAM_SWIPE_DOWN = RuleSwipe(roi_front=(709,308,21,21), roi_back=(709,449,21,21), mode="default", name="ss_team_swipe_down")
 

@@ -46,10 +46,17 @@ def main() -> int:
     task = resolve_task(args.task)
 
     from module.image.rpc import ensure_image_server_ready, shutdown_image_server
-    from module.ocr.rpc import ensure_ocr_server_ready, shutdown_ocr_server
+    from module.ocr import rpc as ocr_rpc
+
+    # 上游新版接口改名为 ensure_ocr_server_started，保留对旧名的兼容
+    _ensure_ocr_server = getattr(ocr_rpc, "ensure_ocr_server_ready", None) or getattr(
+        ocr_rpc, "ensure_ocr_server_started", None
+    )
+    shutdown_ocr_server = ocr_rpc.shutdown_ocr_server
 
     ensure_image_server_ready()
-    ensure_ocr_server_ready()
+    if _ensure_ocr_server is not None:
+        _ensure_ocr_server()
 
     if args.force_fight:
         import module.base.utils as base_utils

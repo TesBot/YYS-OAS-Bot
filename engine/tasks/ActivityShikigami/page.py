@@ -1,195 +1,68 @@
-"""式神活动统一页面定义。"""
+from tasks.ActivityShikigami.assets import ActivityShikigamiAssets as asa
+from tasks.GameUi.page import Page, page_main
+from tasks.GlobalGame.assets import GlobalGameAssets as gga
+from tasks.GameUi.assets import GameUiAssets as G
+from tasks.Component.RightActivity.assets import RightActivityAssets as RAA
+from tasks.base_task import BaseTask as BT
 
-import random
-import time
+# ************************************* 活动部分 *****************************************#
 
-from module.base.timer import Timer
-from module.exception import GamePageUnknownError
-from module.logger import logger
-from tasks.ActivityShikigami.assets import ActivityShikigamiAssets
-from tasks.Component.RightActivity.assets import RightActivityAssets
-from tasks.GameUi.page import (
-    Page,
-    all_of,
-    any_of,
-    conditional_action,
-    page_battle,
-    page_battle_prepare,
-    page_battle_result,
-    page_main,
-    page_reward,
-    page_shikigami_records,
-)
-from tasks.GlobalGame.assets import GlobalGameAssets
+# 活动列表页 act_list
+# page_act_list = Page(G.I_CHECK_ACT_LIST)
+# page_act_list.additional = [G.I_PAPER_DOLL_CLOSE]
+# page_act_list.link(button=G.I_BACK_ACT_LIST, destination=page_main)
+# page_main.link(button=G.I_ACT_LIST_EXPAND, destination=page_act_list)
+# # 活动列表页爬塔活动
+# page_act_list_climb_act = Page(asa.I_CHECK_ACT_LIST_CLIMB_ACT)
+# page_act_list.link(button=G.L_ACT_LIST_OCR, destination=page_act_list_climb_act)
+# page_act_list_climb_act.link(button=G.I_BACK_ACT_LIST, destination=page_main)
 
+# 爬塔活动主要界面
+page_climb_act = Page(asa.I_TO_BATTLE_MAIN)
+page_climb_act.add_enter_success_hooks(gga.I_UI_REWARD, asa.I_SKIP_BUTTON, asa.I_CONFIRM_SKIP, asa.I_RED_EXIT)
+page_climb_act.connect(page_main, G.I_BACK_Y, key="page_climb_act->page_main")
+page_main.connect(page_climb_act, [asa.I_SHI, RAA.I_TOGGLE_BUTTON], key="page_main->page_climb_act")
 
-ACTIVITY_COLUMN_SWITCH_MAX_TRIES = 8
-ACTIVITY_AUXILIARY_SETTLE_SECONDS = 1.0
-
-
-def _settle_activity_auxiliary(task):
-    """附属界面出现后等待一秒，再用新截图确认并处理。"""
-    time.sleep(ACTIVITY_AUXILIARY_SETTLE_SECONDS)
-    task.screenshot()
-
-
-def find_activity_entry(task) -> bool:
-    """在庭院右侧栏目中寻找本期式神活动入口。"""
-    switched = 0
-    for _ in range(ACTIVITY_COLUMN_SWITCH_MAX_TRIES):
-        task.screenshot()
-        if not task.appear(task.I_CHECK_MAIN):
-            return False
-        if task.appear(ActivityShikigamiAssets.I_MAIN_GOTO_ACT):
-            return True
-        if task.appear(RightActivityAssets.I_TOGGLE_BUTTON):
-            _settle_activity_auxiliary(task)
-            if task.appear_then_click(RightActivityAssets.I_TOGGLE_BUTTON, interval=0):
-                switched += 1
-        time.sleep(0.5)
-
-    task.screenshot()
-    if task.appear(ActivityShikigamiAssets.I_MAIN_GOTO_ACT):
-        return True
-    logger.warning(
-        f'ActivityShikigami entry not found after switching columns {switched} times '
-        f'({ACTIVITY_COLUMN_SWITCH_MAX_TRIES} checks)'
-    )
-    raise GamePageUnknownError('Cannot find ActivityShikigami entry')
-
-
-def handle_activity_reward(task) -> bool:
-    if not task.appear(GlobalGameAssets.I_UI_REWARD):
-        return False
-    _settle_activity_auxiliary(task)
-    if not task.appear(GlobalGameAssets.I_UI_REWARD):
-        return False
-    logger.info('Clear activity reward page via ui_reward')
-    task.click(GlobalGameAssets.C_UI_REWARD, interval=0)
-    task.device.click_record_clear()
-    return True
-
-
-def handle_activity_close(task) -> bool:
-    if not task.appear(GlobalGameAssets.I_UI_BACK_RED):
-        return False
-    _settle_activity_auxiliary(task)
-    return task.appear_then_click(GlobalGameAssets.I_UI_BACK_RED, interval=0)
-
-
-def handle_activity_story(task) -> bool:
-    """处理剧情跳过按钮及其确认页面，两次操作前分别等待一秒。"""
-    if task.appear(ActivityShikigamiAssets.I_SKIP_BUTTON):
-        _settle_activity_auxiliary(task)
-        if not task.appear_then_click(ActivityShikigamiAssets.I_SKIP_BUTTON, interval=0):
-            return False
-        task.device.click_record_clear()
-        time.sleep(ACTIVITY_AUXILIARY_SETTLE_SECONDS)
-        task.screenshot()
-        if task.appear_then_click(ActivityShikigamiAssets.I_CONFIRM_SKIP, interval=0):
-            task.device.click_record_clear()
-        return True
-    if task.appear(ActivityShikigamiAssets.I_CONFIRM_SKIP):
-        _settle_activity_auxiliary(task)
-        return task.appear_then_click(ActivityShikigamiAssets.I_CONFIRM_SKIP, interval=0)
-    return False
-
-
-def handle_activity_overlay(task) -> bool:
-    """清理活动奖励、签到等附属页面，并等待活动主页稳定。"""
-    timer = Timer(15).start()
-    award_clicked = False
-    while not timer.reached():
-        task.screenshot()
-
-        if task.appear(GlobalGameAssets.I_UI_REWARD):
-            if not award_clicked:
-                _settle_activity_auxiliary(task)
-                if task.appear(GlobalGameAssets.I_UI_REWARD):
-                    logger.info('Clear activity award overlay via ui_reward')
-                    task.click(GlobalGameAssets.C_UI_REWARD, interval=0)
-                    task.device.click_record_clear()
-                    award_clicked = True
-            time.sleep(0.2)
-            continue
-
-        if task.appear(ActivityShikigamiAssets.I_ACTIVITY_SIGNIN_CLOSE):
-            _settle_activity_auxiliary(task)
-            if task.appear_then_click(ActivityShikigamiAssets.I_ACTIVITY_SIGNIN_CLOSE, interval=0):
-                logger.info('Close activity sign-in overlay')
-                task.device.click_record_clear()
-            time.sleep(0.2)
-            continue
-
-        if task.appear(ActivityShikigamiAssets.I_CHECK_BATTLE_MAIN):
-            # 主界面标志可能先于延迟弹窗出现，等待一秒后再确认稳定。
-            _settle_activity_auxiliary(task)
-            if task.appear(GlobalGameAssets.I_UI_REWARD) or \
-                    task.appear(ActivityShikigamiAssets.I_ACTIVITY_SIGNIN_CLOSE):
-                continue
-            if task.appear(ActivityShikigamiAssets.I_CHECK_BATTLE_MAIN):
-                logger.info('ActivityShikigami main page ready')
-                return True
-
-        time.sleep(0.2)
-
-    logger.warning('ActivityShikigami overlays did not finish within 15s')
-    return False
-
-
-# 活动主页和附属弹窗均由本任务自行识别、进入和处理。
-page_act = Page(
-    any_of(
-        ActivityShikigamiAssets.I_CHECK_BATTLE_MAIN,
-        GlobalGameAssets.I_UI_REWARD,
-        ActivityShikigamiAssets.I_ACTIVITY_SIGNIN_CLOSE,
-    ),
-    priority=70,
-)
-page_act.add_enter_success_hooks(handle_activity_overlay)
-page_act.add_enter_failure_hooks(
-    find_activity_entry,
-    handle_activity_reward,
-    handle_activity_close,
-    handle_activity_story,
-)
-page_act.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key='activity->main')
-page_main.connect(page_act, ActivityShikigamiAssets.I_MAIN_GOTO_ACT, key='main->activity')
-
-# 当期爬塔入口中间层。
-page_activity_exploration = Page(ActivityShikigamiAssets.I_EXP_CHECK_EXPLORATION)
-page_act.connect(page_activity_exploration, ActivityShikigamiAssets.I_TO_EXPLORATION,
-                 key='activity->exploration')
-page_activity_exploration.connect(page_act, ActivityShikigamiAssets.I_EXPLORATION_TO_MAIN,
-                                  key='exploration->activity')
-
-page_climb_main = Page(ActivityShikigamiAssets.I_CHECK_CLIMB_MAIN)
-page_climb_main.connect(page_act, GlobalGameAssets.I_UI_BACK_YELLOW, key='climb_main->activity')
-
-# 当期爬塔四种战斗页面。
-page_climb_ap = Page(all_of(
-    ActivityShikigamiAssets.I_CHECK_BATTLE_PASS,
-    ActivityShikigamiAssets.I_CLIMB_MODE_AP,
-))
-page_climb_ap.connect(page_climb_main, GlobalGameAssets.I_UI_BACK_YELLOW, key='climb_ap->climb_main')
-
-page_climb_pass = Page(all_of(
-    ActivityShikigamiAssets.I_CHECK_BATTLE_PASS,
-    ActivityShikigamiAssets.I_CLIMB_MODE_PASS,
-))
-page_climb_pass.connect(page_climb_main, GlobalGameAssets.I_UI_BACK_YELLOW, key='climb_pass->climb_main')
-
-page_climb_ap100 = Page(ActivityShikigamiAssets.I_CLIMB_MODE_AP100)
-page_climb_ap100.add_enter_failure_hooks(GlobalGameAssets.I_UI_BACK_RED)
-page_climb_ap100.connect(page_climb_main, GlobalGameAssets.I_UI_BACK_YELLOW, key='climb_ap100->climb_main')
-
-page_climb_boss = Page(ActivityShikigamiAssets.I_AS_BOSS_FIRE)
-page_climb_boss.connect(page_act, GlobalGameAssets.I_UI_BACK_YELLOW, key='climb_boss->activity')
-
-# 大富翁棋盘。
-page_rich_man = Page(ActivityShikigamiAssets.I_CHECK_RM_RICHMAN)
-page_rich_man.connect(page_act, GlobalGameAssets.I_UI_BACK_YELLOW, key='rich_man->activity')
-
-# 伪神降临沿用旧素材作为占位；下次复刻时整体替换 fakegod 子目录。
-page_fakegod_action = Page(ActivityShikigamiAssets.I_FG_CLIMB_MODE_PASS)
-page_fakegod_action.connect(page_act, GlobalGameAssets.I_UI_BACK_YELLOW, key='fakegod_action->activity')
+# page_act_list_climb_act.link(button=G.I_ACT_LIST_GOTO_ACT, destination=page_climb_act)
+# # 爬塔活动副界面
+# page_climb_act_2 = Page(asa.I_CHECK_BATTLE_2)
+# page_climb_act_2.additional = [asa.I_ACT_MAP_SWITCH, asa.I_PASS_ACT_LOCAT, asa.I_SKIP_BUTTON, asa.I_RED_EXIT,
+#                                asa.I_RED_EXIT_2]
+# page_climb_act_2.link(button=G.I_BACK_BATTLE, destination=page_climb_act)
+# page_climb_act.link(button=asa.I_BATTLE, destination=page_climb_act_2)
+# # 门票爬塔活动界面
+# page_climb_act_pass = Page(asa.I_AP_ACTIVITY)
+# page_climb_act_pass.additional = [asa.I_SKIP_BUTTON, gga.I_UI_REWARD, asa.I_RED_EXIT, ]
+# page_climb_act_pass.link(button=G.I_BACK_Y, destination=page_climb_act_2)
+# page_climb_act_2.link(button=asa.I_ENTRY_ACTIVITY, destination=page_climb_act_pass)
+# # 体力爬塔活动界面
+# page_climb_act_ap = Page(asa.I_AP)
+# page_climb_act_ap.additional = [asa.O_ENTRY_ACTIVITY, asa.I_SKIP_BUTTON, asa.I_TOGGLE_BUTTON, gga.I_UI_REWARD,
+#                                 asa.I_RED_EXIT]
+# page_climb_act_ap.link(button=G.I_BACK_Y, destination=page_climb_act_2)
+# page_climb_act_2.link(button=asa.O_ENTRY_ACTIVITY, destination=page_climb_act_ap)
+# # 体力, 门票互相跳转
+# # page_climb_act_ap.link(button=asa.I_SWITCH, destination=page_climb_act_pass)
+# # page_climb_act_pass.link(button=asa.I_SWITCH, destination=page_climb_act_ap)
+# # 100体爬塔活动界面
+# page_climb_act_ap100 = Page(asa.I_CHECK_AP100)
+# page_climb_act_2.link(button=asa.O_ENTER_AP100, destination=page_climb_act_ap100)
+# page_climb_act_ap100.link(button=G.I_BACK_Y, destination=page_climb_act_2)
+# # 爬塔活动boss战界面
+# page_climb_act_boss = Page(asa.I_CHECK_BOSS)
+# page_climb_act_boss.additional = [BT.I_UI_BACK_RED, asa.I_SKIP_BUTTON]
+# page_climb_act_boss.link(button=G.I_BACK_Y, destination=page_climb_act)
+# page_climb_act.link(button=asa.I_BOSS, destination=page_climb_act_boss)
+# # 爬塔活动加成界面
+# page_climb_act_buff = Page(asa.I_CHECK_BUFF)
+# page_climb_act_buff.additional = [BT.I_UI_BACK_RED, asa.I_SKIP_BUTTON]
+# page_climb_act_buff.link(button=G.I_BACK_Y, destination=page_climb_act)
+# page_climb_act.link(button=asa.I_BUFF_CHANGE_BUTTON, destination=page_climb_act_buff)
+#
+# page_reward.link(button=random_click(), destination=page_climb_act_pass)
+# page_reward.link(button=random_click(), destination=page_climb_act_ap)
+# page_reward.link(button=random_click(), destination=page_climb_act_boss)
+#
+# page_failed.link(button=random_click(), destination=page_climb_act_pass)
+# page_failed.link(button=random_click(), destination=page_climb_act_ap)
+# page_failed.link(button=random_click(), destination=page_climb_act_boss)

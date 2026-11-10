@@ -54,15 +54,6 @@
     "description": "description"
   },
   {
-    "itemName": "sou_switch_sure",
-    "imageName": "ss_sou_switch_sure.png",
-    "roiFront": "668,401,180,61",
-    "roiBack": "668,401,180,61",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "description": "description"
-  },
-  {
     "itemName": "sou_check_in",
     "imageName": "ss_sou_check_in.png",
     "roiFront": "269,69,50,49",
@@ -160,5 +151,14 @@
     "method": "Template matching",
     "threshold": 0.8,
     "description": "误触点到式神检查"
+  },
+  {
+    "itemName": "goto_shikigami_common",
+    "imageName": "ss_goto_shikigami_common.png",
+    "roiFront": "1037,567,36,36",
+    "roiBack": "617,503,487,134",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "通用进入式神录"
   }
 ]

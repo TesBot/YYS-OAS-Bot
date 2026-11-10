@@ -2,17 +2,17 @@
   {
     "itemName": "check_main_16",
     "imageName": "main16_check_main_16.png",
-    "roiFront": "1017,365,71,48",
-    "roiBack": "900,270,300,220",
+    "roiFront": "260,168,80,54",
+    "roiBack": "180,100,240,180",
     "method": "Template matching",
-    "threshold": 0.75,
-    "description": "庭院"
+    "threshold": 0.8,
+    "description": "狐栖归处庭院判定"
   },
   {
     "itemName": "main_goto_exploration_16",
     "imageName": "main16_main_goto_exploration_16.png",
-    "roiFront": "591,183,28,46",
-    "roiBack": "520,130,190,180",
+    "roiFront": "729,231,28,52",
+    "roiBack": "680,180,130,150",
     "method": "Template matching",
     "threshold": 0.55,
     "description": "探索"
@@ -20,8 +20,8 @@
   {
     "itemName": "main_goto_summon_16",
     "imageName": "main16_main_goto_summon_16.png",
-    "roiFront": "966,199,23,40",
-    "roiBack": "890,130,200,180",
+    "roiFront": "981,218,28,24",
+    "roiBack": "930,170,130,150",
     "method": "Template matching",
     "threshold": 0.55,
     "description": "召唤屋"
@@ -29,8 +29,8 @@
   {
     "itemName": "main_goto_town_16",
     "imageName": "main16_main_goto_town_16.png",
-    "roiFront": "839,330,23,43",
-    "roiBack": "760,250,200,190",
+    "roiFront": "1012,340,21,42",
+    "roiBack": "960,300,100,120",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "町中"
@@ -38,8 +38,8 @@
   {
     "itemName": "pet_house_16",
     "imageName": "main16_pet_house_16.png",
-    "roiFront": "954,371,28,39",
-    "roiBack": "900,330,150,150",
+    "roiFront": "1256,402,20,58",
+    "roiBack": "1210,340,70,140",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "宠物屋"

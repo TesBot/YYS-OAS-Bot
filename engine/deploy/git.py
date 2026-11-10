@@ -3,7 +3,6 @@
 from deploy.config import DeployConfig
 from deploy.logger import logger
 from deploy.utils import *
-from deploy.package_release import is_fixed_package
 
 
 class GitManager(DeployConfig):
@@ -23,9 +22,6 @@ class GitManager(DeployConfig):
             self, repo, source='origin', branch='master',
             proxy='', ssl_verify=True, keep_changes=False
     ):
-        if is_fixed_package():
-            logger.info('Fixed deployment package: repository replacement is disabled')
-            return False
         logger.hr('Git Init', 1)
         if not self.execute(f'"{self.git}" init', allow_failure=True):
             self.remove('./.git/config')
@@ -83,11 +79,7 @@ class GitManager(DeployConfig):
         self.execute(f'"{self.git}" --no-pager log --no-merges -1')
 
     def git_install(self):
-        logger.hr('Update OAS', 0)
-
-        if is_fixed_package():
-            logger.info('Fixed deployment package: Git installation/update is disabled')
-            return
+        logger.hr('Update Alas', 0)
 
         if not self.AutoUpdate:
             logger.info('AutoUpdate is disabled, skip')

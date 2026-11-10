@@ -11,16 +11,14 @@ from datetime import datetime, timedelta
 from module.logger import logger
 from module.exception import GameStuckError, TaskEnd
 from module.base.timer import Timer
-from module.device.click_verification import ClickResponseUnchanged
 
 from tasks.Component.SwitchSoul.switch_soul import SwitchSoul
 from tasks.DemonEncounter.config import BossType, DemonEncounter, convert_to_general_battle_config
-from tasks.DemonEncounter.page import page_rwt
-from tasks.GameUi.default_pages import page_main
 from tasks.GameUi.game_ui import GameUi
-from tasks.GameUi.page import page_shikigami_records
+from tasks.GameUi.page import page_town, page_demon_encounter_realworld, page_shikigami_records
 from tasks.DemonEncounter.assets import DemonEncounterAssets
 from tasks.Component.GeneralBattle.general_battle import GeneralBattle
+from tasks.Component.GeneralBattle.config_general_battle import GeneralBattleConfig
 from tasks.DemonEncounter.data.answer import Answer
 
 
@@ -36,28 +34,9 @@ class LanternClass(Enum):
 
 class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
     conf: DemonEncounter = None
-    # execute_lantern 记录的空灯笼数；四个全空说明今日逢魔内容已耗尽，
-    # find_boss 据此区分「首领已打完」与真正的卡死。
-    _lantern_empty_count = 0
-
-    def screenshot(self):
-        """逢魔长战斗超时时，确认仍在战斗则重置等待计时。"""
-        try:
-            return super().screenshot()
-        except GameStuckError:
-            if not self.exist_image() or not self.is_in_real_battle(False):
-                raise
-            logger.warning(
-                'Demon encounter wait timeout, but battle is still active; '
-                'reset stuck timer'
-            )
-            self.device.stuck_record_clear()
-            self.device.stuck_record_add('BATTLE_STATUS_S')
-            return super().screenshot()
 
     def run(self):
         self.conf = self.config.demon_encounter
-        self._lantern_empty_count = 0
         if not self.check_time():
             logger.warning('Time is not right')
             raise TaskEnd('DemonEncounter')
@@ -67,12 +46,30 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
         if soul_config.enable or best_soul_config.enable:
             self.goto_page(page_shikigami_records)
             self.checkout_soul()
-        self.goto_page(page_rwt)
+        self.goto_page(page_demon_encounter_realworld)
+        # 顶部"今日挑战次数:X/1"检测, 0/1表示今日已打过, 直接结束
+        if self.check_challenge_done():
+            logger.info('Challenge count 0/1, already challenged today')
+            self.set_next_run(task='DemonEncounter', success=True, finish=False)
+            raise TaskEnd('DemonEncounter')
         self.execute_lantern()
         self.execute_boss()
-        self.goto_page(page_main)
+
         self.set_next_run(task='DemonEncounter', success=True, finish=False)
         raise TaskEnd('DemonEncounter')
+
+    def check_challenge_done(self) -> bool:
+        """
+        OCR识别现世逢魔顶部"今日挑战次数:剩余/总", 支持老号X/1与新号X/2
+        DigitCounter 返回 (current, remain, total), current 即剩余次数
+        :return: True表示剩余=0, 今日已打过
+        """
+        current, _remain, total = self.O_DE_CHALLENGE_COUNT.ocr(self.device.image)
+        if total > 0:
+            logger.info(f'Demon encounter challenge count: {current}/{total}')
+            return current == 0
+        logger.warning('Challenge count not recognized, assume attempts remain')
+        return False
 
     def checkout_soul(self):
         """
@@ -95,85 +92,83 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
         """
         logger.hr('Start boss battle', 1)
 
-        def boss_already_done() -> bool:
-            """
-            今日逢魔内容已耗尽的判定：
-            地图中央点不出集结面板（找不到集结挑战按钮），
-            且四个灯笼全部为空（execute_lantern 已确认）。
-            """
-            self.screenshot()
-            if self.appear(self.I_BOSS_FIRE) or self.appear(self.I_BEST_BOSS_FIRE):
-                return False
-            return self._lantern_empty_count >= 4
-
-        def finish_boss_done():
-            logger.warning('Boss battle already done today; skip boss battle')
-            self.screenshot()
-            if self.appear(self.I_UI_BACK_RED):
-                self.ui_click_until_disappear(self.I_UI_BACK_RED)
-            # 今日内容已完成属于正常结束：success=False 会让调度层把本次运行
-            # 记为失败（_learning_task_outcomes），TaskEnd 也会被判 RESULT: False。
-            self.set_next_run(task='DemonEncounter', success=True, finish=True, server=True)
-            raise TaskEnd('DemonEncounter')
-
         def find_boss():
             search_button = self.I_DE_BOSS_BEST if self.best_demon_enable else self.I_DE_BOSS
             boss_name = 'best boss' if self.best_demon_enable else 'normal boss'
 
-            # 最多重新执行两轮“逢魔/极逢魔 -> 地图中央首领”的完整流程。
-            for search_attempt in range(1, 3):
-                self.device.click_record_clear()
+            # 每轮搜索前若中央有未购买的宝箱展示, 先点左下角定位(小指针)把它挪开;
+            # 一整轮(2次搜索)都没找到则重进逢魔之时清状态, 最多3轮。
+            for reenter_round in range(1, 4):
                 self.screenshot()
-                if self.appear(self.I_BOSS_FIRE) or self.appear(self.I_BEST_BOSS_FIRE):
-                    return True
-                if not self.appear_then_click(search_button, interval=0):
-                    raise GameStuckError(f'Cannot find {boss_name} search button')
-                logger.info(f'Finding {boss_name}, attempt {search_attempt}/2...')
-                time.sleep(1)
-
-                # 每轮点击地图中央框选的红色“集结”区域至多两次，
-                # 每次等待集结挑战标志5秒。
-                for center_attempt in range(1, 3):
-                    try:
-                        self.click(self.C_DM_BOSS_CLICK, interval=0)
-                    except ClickResponseUnchanged:
-                        # 重复点地图中央但画面毫无变化：地图上根本没有首领
-                        # 集结点。灯笼全空时视为今日已打完，而不是卡死。
-                        if boss_already_done():
-                            finish_boss_done()
-                        raise
-                    deadline = time.monotonic() + 5
-                    while time.monotonic() < deadline:
-                        self.screenshot()
-                        if self.appear(self.I_BOSS_FIRE) or self.appear(self.I_BEST_BOSS_FIRE):
-                            logger.info(
-                                f'{boss_name} gather appeared after center click '
-                                f'{center_attempt}/2'
-                            )
-                            return True
-                        time.sleep(0.2)
-                    logger.warning(
-                        f'{boss_name} gather did not appear after center click '
-                        f'{center_attempt}/2'
+                if self.appear(self.I_DE_BOX_CENTER):
+                    logger.info(
+                        f'Box display at map center, click location to reset view '
+                        f'(round {reenter_round}/3)'
                     )
+                    self.appear_then_click(self.I_DE_LOCATION, interval=2)
+                    time.sleep(1)
 
-                # 本轮失败，返回逢魔地图，重新点击逢魔/极逢魔进行下一轮搜寻。
-                self.screenshot()
-                if self.appear(self.I_UI_BACK_RED):
-                    self.appear_then_click(self.I_UI_BACK_RED, interval=0)
-                    deadline = time.monotonic() + 5
-                    while time.monotonic() < deadline:
-                        self.screenshot()
-                        if self.appear(search_button):
-                            break
-                        time.sleep(0.2)
+                # 最多重新执行三轮“逢魔/极逢魔 -> 地图中央首领”的完整流程。
+                for search_attempt in range(1, 4):
+                    self.device.click_record_clear()
+                    self.screenshot()
+                    if self.appear(self.I_BOSS_FIRE) or self.appear(self.I_BEST_BOSS_FIRE):
+                        return True
+                    # 没找到boss但地图中央出现宝箱, 导致点击宝箱出现50勾玉购买界面(事后补救)
+                    if self.appear(self.I_JADE_50):
+                        self.ui_click_until_smt_disappear(self.I_DE_FIND, self.I_JADE_50, interval=1)
+                        continue
+                    if not self.appear_then_click(search_button, interval=2):
+                        raise GameStuckError(f'Cannot find {boss_name} search button')
+                    logger.info(
+                        f'Finding {boss_name}, attempt {search_attempt}/3 '
+                        f'(re-enter round {reenter_round}/3)...'
+                    )
+                    time.sleep(1)
 
-            raise GameStuckError(f'Cannot enter {boss_name} after 2 search attempts')
+                    # 每轮点击地图中央框选的红色“集结”区域至多三次，
+                    # 每次等待集结挑战标志5秒。
+                    for center_attempt in range(1, 4):
+                        self.click(self.C_DM_BOSS_CLICK, interval=2)
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline:
+                            self.screenshot()
+                            if self.appear(self.I_BOSS_FIRE) or self.appear(self.I_BEST_BOSS_FIRE):
+                                logger.info(
+                                    f'{boss_name} gather appeared after center click '
+                                    f'{center_attempt}/3'
+                                )
+                                return True
+                            time.sleep(0.2)
+                        logger.warning(
+                            f'{boss_name} gather did not appear after center click '
+                            f'{center_attempt}/3'
+                        )
+
+                    # 本轮失败，返回逢魔地图，重新点击逢魔/极逢魔进行下一轮搜寻。
+                    self.screenshot()
+                    if self.appear(self.I_UI_BACK_RED):
+                        self.appear_then_click(self.I_UI_BACK_RED, interval=2)
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline:
+                            self.screenshot()
+                            if self.appear(search_button):
+                                break
+                            time.sleep(0.2)
+
+                # 3次搜索都没找到: 重进地图清状态, 最多3轮
+                logger.info(f'Boss not found, re-enter demon encounter map (round {reenter_round}/3)')
+                self.goto_page(page_town)
+                self.goto_page(page_demon_encounter_realworld)
+
+            raise GameStuckError(
+                f'Cannot enter {boss_name} after 3 re-enter rounds'
+            )
 
         def enter_boss():
             logger.info('trying to enter boss...')
             # 点击集结挑战
-            boss_fire_count = 0  # 三次没点到就意味着今天已经挑战过了
+            boss_fire_count = 0  # 五次没点到就意味着今天已经挑战过了
             ocr_people_item = self.O_DE_BEST_BOSS_PEOPLE if self.best_demon_enable else self.O_DE_BOSS_PEOPLE
             while 1:
                 self.screenshot()
@@ -198,9 +193,9 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
                     break
                 if self.appear(self.I_BOSS_GATHER):
                     break
-                if boss_fire_count >= 3:
+                if boss_fire_count >= 5:
                     logger.warning('Boss battle already done')
-                    self.set_next_run(task='DemonEncounter', success=True, finish=True, server=True)
+                    self.set_next_run(task='DemonEncounter', success=False, finish=True, server=True)
                     self.ui_click_until_disappear(self.I_UI_BACK_RED)
                     raise TaskEnd('DemonEncounter')
 
@@ -221,40 +216,44 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
             fail_count += 1
 
         logger.info('Boss battle confirm and enter')
-        self.device.stuck_record_clear()
         # 等待挑战, 5秒也是等
         time.sleep(5)
-        refresh_timer = Timer(280)
+        # 延长时间并在战斗结束后改回来
+        self.device.stuck_timer_long = Timer(480, count=480).start()
+        preset_switched = False
         while True:
             self.screenshot()
             if self.appear(self.I_BOSS_DONE_CHECK):
                 break
             if self.appear(self.I_BOSS_GATHER):
-                if not refresh_timer.started() or refresh_timer.reached():
-                    self.device.stuck_record_clear()
-                    self.device.stuck_record_add('BATTLE_STATUS_S')
-                    logger.info('Boss Gathering...')
-                    refresh_timer.reset()
+                self.device.stuck_record_clear()
+                self.device.stuck_record_add('BATTLE_STATUS_S')
+                logger.info('Boss Gathering...')
                 sleep(2)
                 continue
             if self.appear(self.I_BOSS_WAIT):
                 logger.info('Boss battle failed, waiting for 2 seconds...')
-                self.device.stuck_record_clear()
-                self.device.stuck_record_add('BATTLE_STATUS_S')
-                refresh_timer.reset()
                 sleep(2)
                 continue
             if self.appear(self.I_PREPARE_HIGHLIGHT):
+                if preset_switched:
+                    self.run_general_battle()
+                    continue
+                preset_switched = True
+                # 逢魔其他战斗会影响current_count导致大于0
+                self.current_count = 0
                 if self.best_demon_enable:
                     general_battle_config = convert_to_general_battle_config(self.boss_type,
                                                                              best_demon_battle_conf=self.conf.best_demon_battle_config)
                 else:
                     general_battle_config = convert_to_general_battle_config(self.boss_type,
                                                                              demon_battle_conf=self.conf.demon_battle_config)
-                self.run_general_battle(config=general_battle_config, battle_key=self.boss_type)
+                self.run_general_battle(config=general_battle_config)
                 continue
             logger.info('Unknown scene Or Boss fight failed.waiting for Prepare_Button appear...')
             self.wait_until_appear(self.I_PREPARE_HIGHLIGHT, wait_time=2)
+
+        self.device.stuck_timer_long = Timer(300, count=300).start()
 
         # 等待回到挑战boss主界面
         self.wait_until_appear(self.I_BOSS_GATHER)
@@ -304,27 +303,9 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
             3: self.C_DE_3,
             4: self.C_DE_4,
         }
-        lantern_types = self.scan_lantern_types()
-        logger.info(
-            'Lantern map: '
-            + ', '.join(f'{index}={lantern_type.name}'
-                        for index, lantern_type in lantern_types.items())
-        )
         for i in range(1, 5):
             logger.hr(f'Check lantern {i}', 3)
-            # 前面的事件可能改变右侧灯笼状态，处理前用当前画面复核。
-            self.screenshot()
-            current_type = self.check_lantern(i, screenshot=False)
-            if current_type == LanternClass.EMPTY:
-                lantern_type = LanternClass.EMPTY
-            else:
-                lantern_type = current_type
-                if current_type != lantern_types[i]:
-                    logger.info(
-                        f'Lantern {i} changed: '
-                        f'{lantern_types[i].name} -> {current_type.name}'
-                    )
-            self.device.click_record_clear()
+            lantern_type = self.check_lantern(i)
             match lantern_type:
                 case LanternClass.BOX:
                     self._box(match_click[i])
@@ -334,7 +315,6 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
                     self._realm(match_click[i])
                 case LanternClass.EMPTY:
                     logger.warning(f'Lantern {i} is empty')
-                    self._lantern_empty_count += 1
                 case LanternClass.BATTLE:
                     self._battle(match_click[i])
                 case LanternClass.MYSTERY:
@@ -343,15 +323,7 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
                     self._boss(match_click[i])
             time.sleep(1)
 
-    def scan_lantern_types(self):
-        """在同一帧确认四个固定位置，并返回各位置当前类型。"""
-        self.screenshot()
-        return {
-            index: self.check_lantern(index, screenshot=False)
-            for index in range(1, 5)
-        }
-
-    def check_lantern(self, index: int = 1, screenshot: bool = True):
+    def check_lantern(self, index: int = 1):
         """
         检查灯笼的类型
         :param index: 四个灯笼，从1开始
@@ -383,14 +355,9 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
         target_find_boss = self.I_DE_FIND_BOSS
         target_empty = match_empty[index]
 
-        # 使用同一截图依次分析四个固定位置。空灯笼优先，避免已完成位置
-        # 因其他模板未命中而落入“战斗”兜底。
-        if screenshot:
-            self.screenshot()
-        if self.appear(target_empty):
-            logger.info(f'Lantern {index} is empty')
-            return LanternClass.EMPTY
-        elif self.appear(target_box):
+        # 开始判断
+        self.screenshot()
+        if self.appear(target_box):
             logger.info(f'Lantern {index} is box')
             return LanternClass.BOX
         elif self.appear(target_letter):
@@ -402,6 +369,9 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
         elif self.appear(target_realm):
             logger.info(f'Lantern {index} is realm')
             return LanternClass.REALM
+        elif self.appear(target_empty):
+            logger.info(f'Lantern {index} is empty')
+            return LanternClass.EMPTY
         elif self.appear(target_find_boss):
             logger.info(f'Lantern {index} is boss')
             return LanternClass.BOSS
@@ -412,11 +382,12 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
 
     def _box(self, target_click):
         box_buy_config = self.config.demon_encounter.box_buy_config
-        if not self._enter_lantern_event(
-                target_click,
-                lambda: self.appear(self.I_JADE_50),
-                'box purchase'):
-            return
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_JADE_50):
+                break
+            if self.click(target_click, interval=1):
+                continue
         while 1:
             self.screenshot()
             if not self.appear(self.I_MYSTERY_AMULET) and not (box_buy_config.box_buy_sushi and self.appear(self.I_SUSHI)):
@@ -461,16 +432,18 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
             logger.info(f'Question: {question}, Answer: {index}')
             return click_match[index]
 
-        if not self._enter_lantern_event(
-                target_click,
-                lambda: self.appear(self.I_LETTER_CLOSE),
-                'letter'):
-            return
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_LETTER_CLOSE):
+                break
+            if self.click(target_click, interval=1):
+                continue
         logger.info('Question answering Start')
         for i in range(1, 4):
             # 还未测试题库无法识别的情况
             logger.hr(f'Answer {i}', 3)
             answer_click = answer()
+            # self.ui_get_reward(answer())
             while 1:
                 self.screenshot()
                 if self.ui_reward_appear_click():
@@ -487,9 +460,10 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
                     break
                 # 如果没有出现红色关闭按钮，说明答题结束
                 if not self.appear(self.I_LETTER_CLOSE):
-                    time.sleep(1.8)
+                    time.sleep(2.5)
                     self.screenshot()
                     if not self.appear(self.I_LETTER_CLOSE):
+                        self.ui_reward_appear_click()
                         logger.warning('Answer finish')
                         return
 
@@ -497,49 +471,30 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
                 self.click(answer_click, interval=1.5)
             time.sleep(0.5)
 
-    def _enter_lantern_event(self, target_click, predicate, event_name):
-        """灯笼入口仅点击一次；3秒未进入目标界面则跳过当前位置。"""
-        self.click(target_click, interval=0)
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            self.screenshot()
-            if predicate():
-                logger.info(f'Lantern entered {event_name}')
-                return True
-            time.sleep(0.2)
-        logger.warning(f'Lantern did not enter {event_name} in 3s; mark handled and skip')
-        return False
-
     def _battle(self, target_click):
-        if not self._enter_lantern_event(
-                target_click,
-                lambda: not self.appear(self.I_DE_LOCATION)
-                or self.appear(self.I_DE_SMALL_FIRE),
-                'battle'):
-            return
-        if self.appear(self.I_DE_SMALL_FIRE):
-            # 小鬼王
-            logger.info('Small Boss')
-            while 1:
-                self.screenshot()
-                if not self.appear(self.I_DE_SMALL_FIRE):
-                    break
-                if self.appear_then_click(self.I_DE_SMALL_FIRE, interval=1):
-                    continue
-        else:
-            logger.info('Battle Start')
-        self.current_count = 0
+        while 1:
+            self.screenshot()
+            if not self.appear(self.I_DE_LOCATION):
+                logger.info('Battle Start')
+                break
+            if self.appear(self.I_DE_SMALL_FIRE):
+                # 小鬼王
+                logger.info('Small Boss')
+                while 1:
+                    self.screenshot()
+                    if not self.appear(self.I_DE_SMALL_FIRE):
+                        break
+                    if self.appear_then_click(self.I_DE_SMALL_FIRE, interval=1):
+                        continue
+                break
+
+            if self.click(target_click, interval=1):
+                continue
         if self.run_general_battle():
             logger.info('Battle End')
 
     def _realm(self, target_click):
         # 结界
-        if not self._enter_lantern_event(
-                target_click,
-                lambda: self.appear(self.I_DE_REALM_FIRE)
-                or not self.appear(self.I_DE_LOCATION),
-                'realm'):
-            return
         while 1:
             self.screenshot()
             if not self.appear(self.I_DE_LOCATION):
@@ -548,7 +503,8 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
             if self.appear_then_click(self.I_DE_REALM_FIRE, interval=0.7):
                 continue
 
-        self.current_count = 0
+            if self.click(target_click, interval=1):
+                continue
         if self.run_general_battle():
             logger.info('Battle End')
 
@@ -583,16 +539,51 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
             # 17点之前，推迟到当天的17点半
             logger.info('Before 17:00, wait to 17:30')
             target_time = datetime(now.year, now.month, now.day, 17, 30, 0)
-            self.set_next_run(task='DemonEncounter', success=None, finish=False, target=target_time, server=False)
+            self.set_next_run(task='DemonEncounter', success=False, finish=False, target=target_time)
             return False
         elif now.hour >= 23:
             # 23点之后，推迟到第二天的17:30
             logger.info('After 23:00, wait to 17:30')
             target_time = datetime(now.year, now.month, now.day, 17, 30, 0) + timedelta(days=1)
-            self.set_next_run(task='DemonEncounter', success=None, finish=False, target=target_time, server=False)
+            self.set_next_run(task='DemonEncounter', success=False, finish=False, target=target_time)
             return False
         else:
             return True
+
+    def battle_wait(self, random_click_swipt_enable: bool) -> bool:
+        # 重写
+        self.device.stuck_record_add('BATTLE_STATUS_S')
+        self.device.click_record_clear()
+        # 战斗过程 随机点击和滑动 防封
+        logger.info("Start battle process")
+        check_timer = None
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_DE_WIN):
+                logger.info('Appear [demon encounter] win button')
+                self.ui_click_until_disappear(self.I_DE_WIN)
+                check_timer = Timer(3)
+                check_timer.start()
+                continue
+            if self.appear_then_click(self.I_WIN, interval=1):
+                logger.info('Appear win button')
+                check_timer = Timer(3)
+                check_timer.start()
+                continue
+            if self.appear(self.I_REWARD):
+                logger.info('Win battle')
+                self.ui_click_until_disappear(self.I_REWARD)
+                return True
+
+            # 失败的
+            if self.appear(self.I_FALSE):
+                logger.warning('False battle')
+                self.ui_click_until_disappear(self.I_FALSE)
+                return False
+            # 时间到
+            if check_timer and check_timer.reached():
+                logger.warning('Obtain battle timeout')
+                return True
 
     @property
     def boss_type(self) -> str:
@@ -606,6 +597,25 @@ class ScriptTask(GameUi, GeneralBattle, DemonEncounterAssets, SwitchSoul):
         boss_name = BossType(datetime.now().weekday()).name
         return getattr(self.conf.best_demon_boss_config, f'best_demon_{boss_name}_select', False)
 
+    def wait_and_click(self, target) -> bool:
+        """
+        等待目标出现并点击，然后返回True
+        :param target: 图片规则
+        :return: 点击成功返回True
+        """
+        from module.base.timer import Timer
+        from module.exception import TaskEnd
+        timeout = 60
+        timer = Timer(timeout)
+        timer.start()
+        while not timer.reached():
+            self.screenshot()
+            if self.appear(target):
+                if self.appear_then_click(target, interval=1):
+                    return True
+        logger.warning(f'wait_and_click {target.name} timeout')
+        return False
+
 
 if __name__ == '__main__':
     from module.config.config import Config
@@ -616,3 +626,4 @@ if __name__ == '__main__':
     t = ScriptTask(c, d)
 
     t.run()
+    # t.battle_wait(True)

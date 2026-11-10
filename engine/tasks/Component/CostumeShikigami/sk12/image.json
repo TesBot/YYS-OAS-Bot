@@ -56,8 +56,8 @@
   {
     "itemName": "sou_check_group_5_12",
     "imageName": "sk12_sou_check_group_5_12.png",
-    "roiFront": "1093,364,16,49",
-    "roiBack": "1092,361,19,55",
+    "roiFront": "1096,364,8,49",
+    "roiBack": "1092,361,15,55",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "description"
@@ -65,8 +65,8 @@
   {
     "itemName": "sou_check_group_6_12",
     "imageName": "sk12_sou_check_group_6_12.png",
-    "roiFront": "1093,442,14,37",
-    "roiBack": "1088,437,24,48",
+    "roiFront": "1093,442,11,37",
+    "roiBack": "1088,437,20,48",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "description"
@@ -74,7 +74,7 @@
   {
     "itemName": "sou_check_group_7_12",
     "imageName": "sk12_sou_check_group_7_12.png",
-    "roiFront": "1093,506,8,41",
+    "roiFront": "1093,506,6,41",
     "roiBack": "1091,500,13,53",
     "method": "Template matching",
     "threshold": 0.8,
@@ -121,15 +121,6 @@
     "imageName": "sk12_sou_team_present_12.png",
     "roiFront": "734,77,100,41",
     "roiBack": "726,71,115,54",
-    "method": "Template matching",
-    "threshold": 0.8,
-    "description": "description"
-  },
-  {
-    "itemName": "sou_switch_sure_12",
-    "imageName": "sk12_sou_switch_sure_12.png",
-    "roiFront": "702,401,116,55",
-    "roiBack": "690,399,148,64",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "description"

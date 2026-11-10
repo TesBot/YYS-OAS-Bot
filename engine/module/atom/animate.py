@@ -1,6 +1,4 @@
 from pathlib import Path
-
-from module.image.rpc import get_image_client
 from module.logger import logger
 
 from module.atom.image import RuleImage
@@ -40,16 +38,21 @@ class RuleAnimate(RuleImage):
             threshold=threshold,
             file=''
         )
+        if isinstance(rule, RuleImage):
+            # RuleImage 的 roi_back 已在构造时扩大，包装成 RuleAnimate 时不要重复扩大。
+            self.roi_back = tuple(roi_back)
 
         if name is not None:
             self._name = name
+        # match() 会更新 roi_front；动画帧比较始终使用初始裁剪区域，避免搜索范围扩大后发生漂移。
+        self._crop_roi = tuple(roi_front)
         self._last_image = None
 
     @property
     def name(self) -> str:
         return self._name.upper()
 
-    def stable(self, image, refresh_after_stable: bool = False, frame_id: str = None) -> bool:
+    def stable(self, image, refresh_after_stable: bool = False) -> bool:
         """
         用于判断连续的两张截图，的目标区域是否一致
         @param image:
@@ -57,19 +60,12 @@ class RuleAnimate(RuleImage):
         @return:
         """
         if self._last_image is None:
-            self._last_image = self.corp(image, self.roi_back)
+            self._last_image = self.corp(image, self._crop_roi)
             return False
 
-        result = get_image_client().match_dynamic_template(
-            template=self._last_image,
-            image=image,
-            frame_id=frame_id,
-            roi_back=self.roi_back,
-            threshold=self.threshold,
-            name=self.name,
-        )
-        matched = self._apply_match_result(result)
-        self._last_image = self.corp(image, self.roi_front if matched else self.roi_back)
+        self._image = self._last_image
+        matched = self.match(image)
+        self._last_image = self.corp(image, self._crop_roi)
 
         if matched:
             if refresh_after_stable:
@@ -94,3 +90,4 @@ if __name__ == '__main__':
     print(ttt.stable(imga))
     print(ttt.stable(imgb))
     print(ttt.stable(imgb))
+

@@ -36,7 +36,7 @@ class ScriptTask(GameUi, SwitchSoul, SwitchSoulAssets, SoulsTidyAssets):
             [self.I_SOU_SWITCH_2, 0],
             [self.I_SOU_SWITCH_3, 0],
             [self.I_SOU_SWITCH_4, 0],
-            [self.I_SOU_SWITCH_SURE, 0],
+            [self.I_UI_CONFIRM, 0],
             # SoulsTidy - 御魂页面关键元素
             [self.I_ST_SOULS, 0],
             [self.I_ST_REPLACE, 0],
@@ -143,6 +143,9 @@ class ScriptTask(GameUi, SwitchSoul, SwitchSoulAssets, SoulsTidyAssets):
         
         logger.info(f'Detected {detection_count} souls tidy interface elements')
         
+        # 退回到式神录
+        souls_tidy_task.back_records()
+        
         # 退出式神录
         self.goto_page(page_main)
         logger.info('Souls Tidy Donation Test completed')
@@ -155,7 +158,6 @@ if __name__ == '__main__':
     c = Config('oas1')
     d = Device(c)
     t = ScriptTask(c, d)
-    t.set_costume(ShikigamiType.COSTUME_SHIKIGAMI_4)
+    t.set_costume(ShikigamiType.COSTUME_SHIKIGAMI_12)
     # t.set_costume(ShikigamiType.COSTUME_SHIKIGAMI_DEFAULT)
     t.run()
-

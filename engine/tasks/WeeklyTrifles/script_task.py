@@ -11,16 +11,15 @@ from module.base.timer import Timer
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import (
     page_main,
+    page_collection,
     page_area_boss,
     page_secret_zones,
     page_summon,
     page_guild,
+    page_touch_fish,
     random_click,
 )
 from tasks.WeeklyTrifles.assets import WeeklyTriflesAssets
-from tasks.WeeklyTrifles.page import page_shikigami_share, page_touch_fish
-from tasks.WeeklyTrifles.share_receipt import capture_collection_share, share_done_this_week, save_share_receipt
-from module.exception import TaskRecoveryFailed
 
 
 class ScriptTask(GameUi, WeeklyTriflesAssets):
@@ -79,55 +78,35 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
         logger.hr('Touch fish start')
         self.goto_page(page_guild)
         # 防止入口被折叠
-        fold_timer = Timer(15).start()
         while 1:
-            if fold_timer.reached():
-                logger.warning('Touch fish guild entry timeout')
-                self.goto_page(page_main)
-                return
-            # 等个折叠窗口展开动画
-            sleep(1)
             self.screenshot()
-            if self.appear_then_click(self.I_WT_OPEN_FOLD_WINDOW):
+            if self.appear_then_click(self.I_WT_OPEN_FOLD_WINDOW, interval=1):
                 continue
-            if self.appear(self.I_WT_FOLD_WINDOW):
+            if self.appear(self.I_WT_FOLD_WINDOW, interval=1):
                 break
         # 保存次数，后续做了也会邮件返还福运御守
         self.goto_page(page_touch_fish)
-        self.screenshot()
+        self.ui_click_until_smt_disappear(
+            random_click(ltrb=(True, False, False, False)), self.I_WT_LAST_SAVE
+        )
+        sleep(0.5)  # 等待动画
         if self.appear(self.I_WT_SAVE_ALL):
-            # DigitCounter 返回 (current, total - current, total)
-            # 第一个元素才是当前拥有的福运御守数量
             cu_tickts, _, _ = self.O_WT_LUCKY_TICKETS.ocr(self.device.image)
-            logger.info(f'当前的福运御守数量：{cu_tickts}')
+            logger.info(f"当前的福运御守数量：{cu_tickts}")
             cost_tickts = self.O_WT_SAVE_COST.ocr(self.device.image)
-            logger.info(f'全部存储需要花费的福运御守数量：{cost_tickts}')
-            if cost_tickts <= 0:
-                logger.warning('Touch fish save cost OCR unavailable')
-                self.goto_page(page_main)
-                return
-            # 只允许存储一次，避免重复点击 I_WT_SAVE_ALL 陷入等待
+            logger.info(f"全部存储需要花费的福运御守数量：{cost_tickts}")
             not_save_flag = True
             get_timer = Timer(7)
             get_timer.start()
             while 1:
-                if get_timer.reached():
-                    logger.warning('Touch fish timeout, exit!')
-                    break
-                sleep(0.5)
                 self.screenshot()
-                if self.appear(self.I_WT_LAST_SAVE):
-                    self.click(
-                        random_click(ltrb=(True, False, False, False)), interval=1.5
-                    )
-                    continue
-                if self.appear_then_click(self.I_WT_HAPPY_GET):
+                if self.appear_then_click(self.I_WT_HAPPY_GET, interval=1):
                     continue
                 if cu_tickts >= cost_tickts and not_save_flag:
-                    self.appear_then_click(self.I_WT_SAVE_ALL)
+                    self.appear_then_click(self.I_WT_SAVE_ALL, interval=1)
                     not_save_flag = False
                     continue
-                if self.appear_then_click(self.I_WT_TF_CONFIRM):
+                if self.appear_then_click(self.I_WT_TF_CONFIRM, interval=1):
                     continue
                 if self.appear(self.I_WT_TF_SAVE_SUCCESS) and not self.appear(
                     self.I_WT_SAVE_ALL
@@ -137,69 +116,83 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
                 if cu_tickts < cost_tickts and not_save_flag:
                     logger.warning('Touch fish tickts not enough, exit!')
                     break
+                if get_timer.reached():
+                    logger.warning('Touch fish timeout, exit!')
+                    break
         logger.hr('Touch fish finished')
         self.goto_page(page_main)
 
     def _share_collect(self):
+        """
+        图鉴分享
+        :return:
+        """
         logger.hr('Share collect')
-        profile = self.config.config_name
-        if share_done_this_week(profile):
-            logger.info('Collection share has a verified receipt this week; skip')
-            return
-        self.goto_page(page_shikigami_share)
-        reward_claimed = False
-        with capture_collection_share(self.device) as receipt:
-            try:
-                receipt.armed = True
-                appeared = self.ui_click_until_appear_or_timeout(
-                    self.I_WT_COLLECT_WECHAT, self.I_WT_QR_CODE, 1.2, 5)
-                if not appeared and not receipt.seen:
-                    raise TaskRecoveryFailed('Collection share dialog or success receipt was not observed')
-                get_timer = Timer(self.device.performance.timeout(7)).start()
-                share_sent = False
-                while True:
-                    self.screenshot()
-                    # Preserve first-share rewards. A repeat share legitimately
-                    # produces only the brief success toast, without an amulet.
-                    if self.appear(self.I_UI_REWARD, threshold=0.6):
-                        if not self.ui_reward_appear_click():
-                            raise TaskRecoveryFailed('Collection share reward claim was blocked')
-                        self._ui_verify(lambda: not self.appear(self.I_UI_REWARD, threshold=0.6),
-                                        [self.I_UI_REWARD])
-                        reward_claimed = True
-                        break
-                    if receipt.seen:
-                        # Give a first-share reward time to appear after its toast.
-                        for _ in range(6):
-                            sleep(0.2)
-                            self.screenshot()
-                            if self.appear(self.I_UI_REWARD, threshold=0.6):
-                                if not self.ui_reward_appear_click():
-                                    raise TaskRecoveryFailed('Collection share reward claim was blocked')
-                                self._ui_verify(lambda: not self.appear(self.I_UI_REWARD, threshold=0.6),
-                                                [self.I_UI_REWARD])
-                                reward_claimed = True
-                                break
-                        break
-                    if get_timer.reached():
-                        raise TaskRecoveryFailed('Collection share had neither success toast nor reward')
-                    if not share_sent and self.appear(self.I_WT_QR_CODE):
-                        if not self.appear_then_click(self.I_WT_QR_CODE, self.C_WT_WECHAT, interval=0):
-                            raise TaskRecoveryFailed('Collection share confirmation was blocked')
-                        share_sent = True
-            finally:
-                if reward_claimed or receipt.seen:
-                    save_share_receipt(profile, 'reward_claimed' if reward_claimed else 'share_success')
-                    logger.info('Collection share verified and saved; no repeat reward required')
-        # Navigation failures remain distinct from the saved share receipt.
-        # Other weekly subtasks must still execute and confirm their own work.
-        self.goto_page(page_main)
+        self.goto_page(page_collection)
+        # 一路进去
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_WT_LOGO):
+                break
+            if self.appear_then_click(self.I_WT_SHIKIAGMI, interval=1):
+                continue
+            if self.appear_then_click(self.I_WT_SHARE, interval=1):
+                continue
+        # 点击分享
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_WT_QR_CODE):
+                break
+            if self.appear_then_click(self.I_WT_COLLECT_WECHAT, interval=4):
+                continue
+        logger.info('Click share')
+        get_timer = Timer(3)
+        get_timer.start()
+        while 1:
+            self.screenshot()
+
+            if self.ui_reward_appear_click():
+                logger.info('Get reward')
+                break
+
+            if self.appear_then_click(
+                self.I_WT_QR_CODE, self.C_WT_WECHAT, interval=2.8
+            ):
+                continue
+            if get_timer.reached():
+                logger.warning('Share timeout. The reward may have been obtained')
+                break
+        # 返回
+        while 1:
+            self.screenshot()
+            if self.appear(self.I_WT_SHIKIAGMI):
+                break
+            if self.appear_then_click(self.I_UI_BACK_RED, interval=1):
+                continue
+            if self.appear_then_click(self.I_UI_BACK_YELLOW, interval=1):
+                continue
 
     def _share_area_boss(self):
         """
         地鬼分享
         :return:
         """
+
+        def back_boss():
+            while 1:
+                self.screenshot()
+                if self.appear(self.I_WT_DAY_BATTLE) or self.appear(
+                    self.I_CHECK_EXPLORATION
+                ):
+                    break
+                if self.appear_then_click(self.I_UI_BACK_RED, interval=1):
+                    continue
+                if self.appear_then_click(self.I_UI_BACK_BLUE, interval=1):
+                    continue
+                if self.appear_then_click(self.I_UI_BACK_YELLOW, interval=1):
+                    continue
+            logger.info('Back to boss')
+
         logger.hr('Share area boss')
         self.goto_page(page_area_boss)
 
@@ -212,7 +205,7 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
             if self.appear(self.I_WT_NO_DAY):
                 obtained = True
                 break
-            if self.click(self.C_WT_AB_CLICK, interval=1):
+            if self.click(self.C_WT_AB_CLICK, interval=2.5):
                 continue
             if self.appear_then_click(self.I_WT_DAY_BATTLE, interval=2):
                 continue
@@ -227,7 +220,9 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
         if not obtained:
             # 点击分享
             self.click_share(self.I_WT_AB_WECHAT)
-        self.goto_page(page_main)
+            obtained = True
+        if obtained:
+            back_boss()
 
     def _share_secret(self):
         """
@@ -254,7 +249,8 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
                 if self.appear(self.I_WT_SE_SHARE):
                     continue
                 logger.warning('This week has not been obtained')
-                self.goto_page(page_main)
+                self.ui_click(self.I_UI_BACK_BLUE, self.I_UI_BACK_YELLOW)
+                self.ui_click(self.I_UI_BACK_YELLOW, self.I_CHECK_MAIN)
                 return
         logger.info('Enter secret')
         # 判断是否已经领取
@@ -267,7 +263,8 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
         if not obtained:
             self.click_share(self.I_WT_SE_WECHAT)
         # 返回
-        self.goto_page(page_main)
+        self.ui_click(self.I_UI_BACK_BLUE, self.I_UI_BACK_YELLOW)
+        self.ui_click(self.I_UI_BACK_YELLOW, self.I_CHECK_MAIN)
 
     def _broken_amulet(self, dest_num: int):
         """
@@ -277,13 +274,13 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
         """
 
         def exit_amulet():
-            while True:
+            self.wait_until_appear(self.I_BM_CONFIRM, wait_time=3)
+            while 1:
                 self.screenshot()
-                if self.appear(self.I_BM_ENTER, interval=0.6):
+                if not self.appear(self.I_BM_CONFIRM):
                     break
-                if self.appear_then_click(self.I_BM_CONFIRM, interval=1):
-                    continue
-                self.click(random_click(ltrb=(False, False, True, False)), interval=1.5)
+                else:
+                    self.appear_then_click(self.I_BM_CONFIRM, interval=1)
             logger.info('Exit broken amulet')
 
         logger.hr('Broken amulet')
@@ -311,7 +308,6 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
                 # 随机点击直到再次召唤出现或者超时
                 while not timeout_timer.reached():
                     if not self.click(random_click(), interval=0.8):
-                        self.device.click_record_clear()
                         continue
                     self.screenshot()
                     if self.appear(self.I_BM_AGAIN, interval=0.8):
@@ -328,9 +324,7 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
                 return
             x_10, _, _, _ = self.O_BA_TIMES.ocr(self.device.image, '10次')
             x_50, _, _, _ = self.O_BA_TIMES.ocr(self.device.image, '50次')
-            self.I_BMT_CHECK.match(
-                self.device.image, frame_id=self.device.image_frame_id
-            )
+            self.I_BMT_CHECK.match(self.device.image)
             x_check, y_check, width_check, height_check = self.I_BMT_CHECK.roi_front
             selected_10 = min(abs(x_10 - x_check), abs(x_50 - x_check)) == abs(
                 x_10 - x_check
@@ -368,4 +362,8 @@ if __name__ == '__main__':
     d = Device(c)
     t = ScriptTask(c, d)
     t.screenshot()
+
     t.run()
+    # t._share_collect()
+    t._share_area_boss()
+    # t.click_share(t.I_WT_SE_WECHAT)

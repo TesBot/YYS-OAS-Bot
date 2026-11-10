@@ -2,8 +2,6 @@
 # @author runhey
 # github https://github.com/runhey
 import json
-import math
-import multiprocessing
 import re
 import shutil
 import threading
@@ -12,7 +10,6 @@ import uuid
 import base64
 from dataclasses import dataclass
 from pathlib import Path
-from queue import Empty as QueueEmpty
 from typing import Any
 
 import cv2
@@ -22,6 +19,8 @@ from filelock import FileLock
 from dev_tools.assets_extract import AssetsExtractor
 from dev_tools.assets_test import detect_image_detail, detect_ocr_detail
 from module.config.atomicwrites import atomic_write
+from module.config.config import Config
+from module.device.device import Device
 from module.logger import logger
 from module.server.config_manager import ConfigManager
 from module.server.annotator_rule_schema import (
@@ -33,7 +32,6 @@ from module.server.annotator_rule_schema import (
     merge_list_meta_with_defaults,
     merge_rule_with_defaults,
 )
-from module.server.tool_capture_worker import run_annotator_capture_worker
 
 PROJECT_ROOT = Path.cwd().resolve()
 TASKS_ROOT = (PROJECT_ROOT / "tasks").resolve()
@@ -41,7 +39,6 @@ ANNOTATOR_ROOT = (PROJECT_ROOT / "log" / "annotator").resolve()
 
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 ALLOWED_RULE_TYPE = set(get_rule_types())
-ALLOWED_IMAGE_METHOD = set(field_options("image", "method"))
 ALLOWED_OCR_MODE = set(field_options("ocr", "mode"))
 ALLOWED_LIST_DIRECTION = set(field_options("list", "direction"))
 ALLOWED_LIST_MODE = set(field_options("list", "type"))
@@ -50,10 +47,7 @@ ALLOWED_SWIPE_MODE = set(field_options("swipe", "mode"))
 SESSION_IDLE_TIMEOUT_SECONDS = 10 * 60
 SESSION_SWEEP_INTERVAL_SECONDS = 30
 EMULATOR_CAPTURE_MAX_RETRIES = 3
-EMULATOR_CAPTURE_PROCESS_JOIN_TIMEOUT_SECONDS = 2.5
-EMULATOR_CAPTURE_COMMAND_TIMEOUT_SECONDS = 5.0
-
-_EMULATOR_CAPTURE_CONTEXT = multiprocessing.get_context("spawn")
+EMULATOR_CAPTURE_RETRY_BACKOFF_SECONDS = 1.0
 
 
 class AnnotatorError(Exception):
@@ -91,99 +85,17 @@ class EmulatorCaptureSession:
         self.config_name = ""
         self.frame_rate = 2
         self.error = ""
-        self._process: multiprocessing.Process | None = None
-        self._state_queue = None
-        self._frame_queue = None
-        self._command_queue = None
-        self._response_queue = None
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
         self._frame_lock = threading.Lock()
+        self._latest_frame = None
         self._latest_jpeg: bytes | None = None
         self._updated_at = 0.0
         self._retry_count = 0
         self._max_retries = EMULATOR_CAPTURE_MAX_RETRIES
         self._last_error_at = 0.0
 
-    def _drain_status_queue(self) -> None:
-        if self._state_queue is None:
-            return
-        while True:
-            try:
-                payload = self._state_queue.get_nowait()
-            except QueueEmpty:
-                break
-
-            with self._frame_lock:
-                if "state" in payload:
-                    self.state = str(payload["state"])
-                if "error" in payload:
-                    self.error = str(payload["error"] or "")
-                if "retry_count" in payload:
-                    self._retry_count = int(payload["retry_count"])
-                if "max_retries" in payload:
-                    self._max_retries = int(payload["max_retries"])
-                if "last_error_at" in payload:
-                    self._last_error_at = float(payload["last_error_at"] or 0.0)
-
-    def _drain_frame_queue(self) -> None:
-        if self._frame_queue is None:
-            return
-        while True:
-            try:
-                payload = self._frame_queue.get_nowait()
-            except QueueEmpty:
-                break
-
-            jpeg = payload.get("jpeg")
-            if not jpeg:
-                continue
-
-            with self._frame_lock:
-                self._latest_jpeg = bytes(jpeg)
-                self._updated_at = float(payload.get("updated_at") or time.time())
-                self._retry_count = 0
-                self.error = ""
-                self.state = "running"
-
-    def _sync_process_state(self) -> None:
-        process = self._process
-        if process is None or process.is_alive():
-            return
-
-        with self._frame_lock:
-            if self.state in {"stopped", "error"}:
-                return
-            if process.exitcode in (None, 0):
-                self.state = "stopped"
-                return
-            self.state = "error"
-            self._last_error_at = time.time()
-            if not self.error:
-                self.error = f"模拟器采集进程异常退出({process.exitcode})"
-
-    def _drain_updates(self) -> None:
-        self._drain_status_queue()
-        self._drain_frame_queue()
-        self._sync_process_state()
-
-    def _create_ipc(self) -> None:
-        self._state_queue = _EMULATOR_CAPTURE_CONTEXT.Queue()
-        self._frame_queue = _EMULATOR_CAPTURE_CONTEXT.Queue(maxsize=1)
-        self._command_queue = _EMULATOR_CAPTURE_CONTEXT.Queue()
-        self._response_queue = _EMULATOR_CAPTURE_CONTEXT.Queue()
-
-    def _dispose_ipc(self) -> None:
-        for name in ("_state_queue", "_frame_queue", "_command_queue", "_response_queue"):
-            queue = getattr(self, name)
-            if queue is None:
-                continue
-            try:
-                queue.close()
-            except Exception:
-                pass
-            setattr(self, name, None)
-
     def status(self) -> dict[str, Any]:
-        self._drain_updates()
         with self._frame_lock:
             return {
                 "state": self.state,
@@ -207,63 +119,141 @@ class EmulatorCaptureSession:
             self._updated_at = 0.0
             self._retry_count = 0
             self._last_error_at = 0.0
+            self._latest_frame = None
             self._latest_jpeg = None
-        self._create_ipc()
-        self._process = _EMULATOR_CAPTURE_CONTEXT.Process(
-            target=run_annotator_capture_worker,
-            args=(
-                self.session_id,
-                self.config_name,
-                self.frame_rate,
-                self._state_queue,
-                self._frame_queue,
-                self._command_queue,
-                self._response_queue,
-            ),
-            name=f"annotator_capture_{self.session_id}",
-            daemon=True,
-        )
-        self._process.start()
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"annotator_capture_{self.session_id}")
+        self._thread.start()
         return self.frame_rate
 
     def stop(self, clear_error: bool = False) -> None:
-        process = self._process
-        if process and process.is_alive() and self._command_queue is not None:
-            try:
-                self._command_queue.put_nowait({"type": "stop"})
-            except Exception:
-                pass
-
-        if process and process.is_alive():
-            process.join(timeout=EMULATOR_CAPTURE_PROCESS_JOIN_TIMEOUT_SECONDS)
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=1.0)
-
-        self._drain_updates()
-        self._process = None
-        self._dispose_ipc()
+        self._stop_event.set()
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=2.5)
+        self._thread = None
         with self._frame_lock:
             self.state = "stopped"
             self._retry_count = 0
-            self._latest_jpeg = None
-            self._updated_at = 0.0
             if clear_error:
                 self.error = ""
                 self._last_error_at = 0.0
 
+    def _build_device(self, config: Config, interval: float) -> Device:
+        device = Device(config=config)
+        device.disable_stuck_detection()
+        device.screenshot_interval_set(interval)
+        logger.info(
+            f"[annotator] emulator device ready, session={self.session_id}, "
+            f"config={self.config_name}, interval={interval:.3f}"
+        )
+        return device
+
+    @staticmethod
+    def _release_device(device: Device | None) -> None:
+        if device is None:
+            return
+        try:
+            device.release_during_wait()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _format_error_message(error: Exception) -> str:
+        text = str(error).strip()
+        if text:
+            return text
+        return error.__class__.__name__
+
+    def _mark_capture_failure(self, stage: str, error: Exception) -> tuple[bool, int, str]:
+        message = self._format_error_message(error)
+        with self._frame_lock:
+            self.error = message
+            self._last_error_at = time.time()
+            self._retry_count += 1
+            attempt = self._retry_count
+            should_retry = attempt <= self._max_retries and not self._stop_event.is_set()
+            self.state = "starting" if should_retry else "error"
+        if should_retry:
+            logger.warning(
+                f"[annotator] emulator capture retry, session={self.session_id}, config={self.config_name}, "
+                f"stage={stage}, attempt={attempt}/{self._max_retries}, error={message}"
+            )
+        else:
+            logger.error(
+                f"[annotator] emulator capture failed, session={self.session_id}, config={self.config_name}, "
+                f"stage={stage}, attempt={attempt}/{self._max_retries}, error={message}"
+            )
+        return should_retry, attempt, message
+
+    def _run(self) -> None:
+        device: Device | None = None
+        interval = max(0.1, 1.0 / float(self.frame_rate))
+        try:
+            config = Config(config_name=self.config_name)
+            while not self._stop_event.is_set():
+                if device is None:
+                    try:
+                        device = self._build_device(config, interval)
+                        with self._frame_lock:
+                            self.state = "running"
+                    except Exception as e:
+                        should_retry, attempt, _ = self._mark_capture_failure("connect", e)
+                        if not should_retry:
+                            break
+                        if self._stop_event.wait(EMULATOR_CAPTURE_RETRY_BACKOFF_SECONDS * attempt):
+                            break
+                        continue
+
+                try:
+                    frame = device.screenshot()
+                except Exception as e:
+                    self._release_device(device)
+                    device = None
+                    should_retry, attempt, _ = self._mark_capture_failure("capture", e)
+                    if not should_retry:
+                        break
+                    if self._stop_event.wait(EMULATOR_CAPTURE_RETRY_BACKOFF_SECONDS * attempt):
+                        break
+                    continue
+
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                ok, buf = cv2.imencode(".jpg", frame_bgr)
+                if ok:
+                    with self._frame_lock:
+                        self._latest_frame = frame_bgr.copy()
+                        self._latest_jpeg = buf.tobytes()
+                        self._updated_at = time.time()
+                        self._retry_count = 0
+                        self.error = ""
+                        self.state = "running"
+
+                if self._stop_event.wait(interval):
+                    break
+        except Exception:
+            with self._frame_lock:
+                self.state = "error"
+                self._last_error_at = time.time()
+                if not self.error:
+                    self.error = "模拟器采集线程异常退出"
+            logger.error(f"[annotator] emulator capture loop crashed, session={self.session_id}, config={self.config_name}")
+        finally:
+            self._release_device(device)
+            if self.state != "error":
+                with self._frame_lock:
+                    self.state = "stopped"
+
     def latest_jpeg(self) -> bytes | None:
-        self._drain_updates()
         with self._frame_lock:
             if self.state != "running" or self._latest_jpeg is None:
                 return None
             return bytes(self._latest_jpeg)
 
     def capture_latest_frame(self, output_file: Path) -> None:
-        self._drain_updates()
         with self._frame_lock:
             state = self.state
             error = self.error
+            frame = None if self._latest_frame is None else self._latest_frame.copy()
 
         if state != "running":
             if state == "error":
@@ -272,44 +262,12 @@ class EmulatorCaptureSession:
                 raise AnnotatorError("emulator_starting", "模拟器画面尚未就绪，请稍后重试", 409)
             raise AnnotatorError("emulator_not_running", "模拟器画面未启动", 409)
 
-        if self._command_queue is None or self._response_queue is None:
-            raise AnnotatorError("emulator_not_running", "模拟器画面未启动", 409)
+        if frame is None:
+            raise AnnotatorError("no_frame", "当前没有可用帧，无法截图", 400)
 
-        request_id = uuid.uuid4().hex
-        try:
-            self._command_queue.put_nowait(
-                {
-                    "type": "capture",
-                    "request_id": request_id,
-                    "output_file": str(output_file.resolve()),
-                }
-            )
-        except Exception as e:
-            raise AnnotatorError("capture_failed", "提交截图请求失败", 500) from e
-
-        deadline = time.time() + EMULATOR_CAPTURE_COMMAND_TIMEOUT_SECONDS
-        while time.time() < deadline:
-            self._drain_updates()
-            wait_seconds = min(0.1, deadline - time.time())
-            if wait_seconds <= 0:
-                break
-            try:
-                response = self._response_queue.get(timeout=wait_seconds)
-            except QueueEmpty:
-                continue
-
-            if str(response.get("request_id", "")) != request_id:
-                continue
-            if response.get("ok"):
-                return
-
-            code = str(response.get("code", "")).strip() or "capture_failed"
-            message = str(response.get("message", "")).strip() or "保存截图失败"
-            status_code = 500 if code == "capture_failed" else 400
-            raise AnnotatorError(code, message, status_code)
-
-        self._drain_updates()
-        raise AnnotatorError("capture_timeout", "保存截图超时", 504)
+        ok = cv2.imwrite(str(output_file), frame)
+        if not ok:
+            raise AnnotatorError("capture_failed", "保存截图失败", 500)
 
 
 class AnnotatorSession:
@@ -724,83 +682,6 @@ class AnnotatorManager:
             ]
         )
 
-    @staticmethod
-    def _polygon_segments_intersect(a, b, c, d) -> bool:
-        def orientation(p, q, r):
-            value = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
-            if value == 0:
-                return 0
-            return 1 if value > 0 else 2
-
-        def on_segment(p, q, r):
-            return (
-                min(p[0], r[0]) <= q[0] <= max(p[0], r[0])
-                and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
-            )
-
-        o1 = orientation(a, b, c)
-        o2 = orientation(a, b, d)
-        o3 = orientation(c, d, a)
-        o4 = orientation(c, d, b)
-        if o1 != o2 and o3 != o4:
-            return True
-        return (
-            (o1 == 0 and on_segment(a, c, b))
-            or (o2 == 0 and on_segment(a, d, b))
-            or (o3 == 0 and on_segment(c, a, d))
-            or (o4 == 0 and on_segment(c, b, d))
-        )
-
-    @staticmethod
-    def _parse_scatter_polygon(value: Any) -> list[list[int]]:
-        """校验截图工具提交的点击多边形，并转换为像素整数坐标。"""
-        if not isinstance(value, (list, tuple)) or len(value) < 3:
-            raise AnnotatorError("invalid_polygon", "多边形至少需要三个顶点", 400)
-
-        points: list[list[int]] = []
-        for point in value:
-            if not isinstance(point, (list, tuple)) or len(point) != 2:
-                raise AnnotatorError("invalid_polygon", "多边形顶点必须是 [x, y]", 400)
-            try:
-                x, y = float(point[0]), float(point[1])
-            except (TypeError, ValueError) as exc:
-                raise AnnotatorError("invalid_polygon", "多边形顶点必须是数字", 400) from exc
-            if not math.isfinite(x) or not math.isfinite(y):
-                raise AnnotatorError("invalid_polygon", "多边形顶点必须是有限数字", 400)
-            points.append([round(x), round(y)])
-
-        if len({tuple(point) for point in points}) < 3:
-            raise AnnotatorError("invalid_polygon", "多边形至少需要三个不同顶点", 400)
-        if any(points[index] == points[(index + 1) % len(points)] for index in range(len(points))):
-            raise AnnotatorError("invalid_polygon", "多边形不能包含连续重复顶点", 400)
-        for first_index in range(len(points)):
-            first_next = (first_index + 1) % len(points)
-            for second_index in range(first_index + 1, len(points)):
-                second_next = (second_index + 1) % len(points)
-                if first_index == second_next or first_next == second_index:
-                    continue
-                if AnnotatorManager._polygon_segments_intersect(
-                    points[first_index],
-                    points[first_next],
-                    points[second_index],
-                    points[second_next],
-                ):
-                    raise AnnotatorError("invalid_polygon", "多边形边线不能相交", 400)
-        area_twice = sum(
-            points[index][0] * points[(index + 1) % len(points)][1]
-            - points[(index + 1) % len(points)][0] * points[index][1]
-            for index in range(len(points))
-        )
-        if area_twice == 0:
-            raise AnnotatorError("invalid_polygon", "多边形面积必须大于 0", 400)
-        return points
-
-    @staticmethod
-    def _polygon_bounding_roi(points: list[list[int]]) -> str:
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
-        return f"{min(xs)},{min(ys)},{max(xs) - min(xs) + 1},{max(ys) - min(ys) + 1}"
-
     def _normalize_image_rules(self, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for index, rule in enumerate(rules):
@@ -808,9 +689,6 @@ class AnnotatorManager:
             if not item_name:
                 raise AnnotatorError("invalid_rule", f"第 {index + 1} 条规则缺少 itemName", 400)
             image_name = str(rule.get("imageName", "")).strip() or f"{item_name}.png"
-            method = str(rule.get("method", field_default("image", "method", "Template matching"))).strip() or field_default("image", "method", "Template matching")
-            if method not in ALLOWED_IMAGE_METHOD:
-                raise AnnotatorError("invalid_rule", f"第 {index + 1} 条规则 method 不支持: {method}", 400)
             threshold_value = rule.get("threshold", 0.8)
             try:
                 threshold = float(threshold_value)
@@ -818,18 +696,14 @@ class AnnotatorManager:
                 raise AnnotatorError("invalid_rule", f"第 {index + 1} 条规则 threshold 非法", 400) from e
             if threshold < 0 or threshold > 1:
                 raise AnnotatorError("invalid_rule", f"第 {index + 1} 条规则 threshold 必须在 0-1", 400)
-            profile = str(rule.get("profile", "Default")).strip() or "Default"
-            if profile not in ("Default", "High", "More"):
-                raise AnnotatorError("invalid_rule", f"第 {index + 1} 条图片规则 profile 非法", 400)
             normalized.append(
                 {
                     "itemName": item_name,
                     "imageName": image_name,
                     "roiFront": self._parse_roi(str(rule.get("roiFront", ""))),
                     "roiBack": self._parse_roi(str(rule.get("roiBack", ""))),
-                    "method": method,
+                    "method": str(rule.get("method", field_default("image", "method", "Template matching"))).strip() or field_default("image", "method", "Template matching"),
                     "threshold": threshold,
-                    "profile": profile,
                     "description": str(rule.get("description", "")).strip(),
                 }
             )
@@ -863,41 +737,14 @@ class AnnotatorManager:
             item_name = str(rule.get("itemName", "")).strip()
             if not item_name:
                 raise AnnotatorError("invalid_rule", f"第 {index + 1} 条点击规则缺少 itemName", 400)
-            profile = str(rule.get("profile", "Default")).strip() or "Default"
-            if profile not in ("Default", "High", "More"):
-                raise AnnotatorError("invalid_rule", f"第 {index + 1} 条点击规则 profile 非法", 400)
-            normalized.append({
-                "itemName": item_name,
-                "roiFront": self._parse_roi(str(rule.get("roiFront", ""))),
-                "roiBack": self._parse_roi(str(rule.get("roiBack", ""))),
-                "profile": profile,
-                "description": str(rule.get("description", "")).strip(),
-            })
-        return normalized
-
-    def _normalize_scatter_rules(self, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        normalized: list[dict[str, Any]] = []
-        for index, rule in enumerate(rules):
-            item_name = str(rule.get("itemName", "")).strip()
-            if not item_name:
-                raise AnnotatorError("invalid_rule", f"第 {index + 1} 条散点规则缺少 itemName", 400)
-            try:
-                focus_count = int(rule.get("focusCount"))
-            except (TypeError, ValueError) as exc:
-                raise AnnotatorError("invalid_rule", f"第 {index + 1} 条散点规则 focusCount 非法", 400) from exc
-            if focus_count <= 0:
-                raise AnnotatorError("invalid_rule", f"第 {index + 1} 条散点规则 focusCount 必须大于 0", 400)
-            polygon = self._parse_scatter_polygon(rule.get("polygon"))
-            bounding_roi = self._polygon_bounding_roi(polygon)
-            normalized.append({
-                "itemName": item_name,
-                "roiFront": bounding_roi,
-                "roiBack": bounding_roi,
-                "polygon": polygon,
-                "focusCount": focus_count,
-                "functional": bool(rule.get("functional", False)),
-                "description": str(rule.get("description", "")).strip(),
-            })
+            normalized.append(
+                {
+                    "itemName": item_name,
+                    "roiFront": self._parse_roi(str(rule.get("roiFront", ""))),
+                    "roiBack": self._parse_roi(str(rule.get("roiBack", ""))),
+                    "description": str(rule.get("description", "")).strip(),
+                }
+            )
         return normalized
 
     def _normalize_swipe_rules(self, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1132,8 +979,6 @@ class AnnotatorManager:
                 return "long_click"
             if "mode" in item:
                 return "swipe"
-            if "polygon" in item:
-                return "scatter"
             return "click"
         return "unknown"
 
@@ -1181,7 +1026,6 @@ class AnnotatorManager:
                             "roiBack": str(item.get("roiBack", "0,0,100,100")),
                             "method": str(item.get("method", "Template matching")),
                             "threshold": float(item.get("threshold", 0.8)),
-                            "profile": str(item.get("profile", "Default")),
                             "description": str(item.get("description", "")),
                         }
                     )
@@ -1203,19 +1047,6 @@ class AnnotatorManager:
                             "itemName": str(item.get("itemName", "")),
                             "roiFront": str(item.get("roiFront", "0,0,100,100")),
                             "roiBack": str(item.get("roiBack", "0,0,100,100")),
-                            "profile": str(item.get("profile", "Default")),
-                            "description": str(item.get("description", "")),
-                        }
-                    )
-                elif rule_type == "scatter":
-                    rules.append(
-                        {
-                            "itemName": str(item.get("itemName", "")),
-                            "roiFront": str(item.get("roiFront", "0,0,100,100")),
-                            "roiBack": str(item.get("roiBack", "0,0,100,100")),
-                            "polygon": item.get("polygon", []),
-                            "focusCount": item.get("focusCount", 8),
-                            "functional": bool(item.get("functional", False)),
                             "description": str(item.get("description", "")),
                         }
                     )
@@ -1355,9 +1186,6 @@ class AnnotatorManager:
                 threshold = float(rule.get("threshold", 0.8))
             except (TypeError, ValueError) as e:
                 raise AnnotatorError("invalid_rule", "threshold 非法", 400) from e
-            profile = str(rule.get("profile", "Default")).strip() or "Default"
-            if profile not in ("Default", "High", "More"):
-                raise AnnotatorError("invalid_rule", "profile 非法", 400)
             roi_back = self._parse_roi_tuple(str(rule.get("roiBack", "")))
             task_root, target_json = self._resolve_json_path(task_name, json_relpath)
             template = self.get_rule_image_file(task_name, json_relpath, image_name)
@@ -1369,7 +1197,6 @@ class AnnotatorManager:
                 method=method,
                 threshold=threshold,
                 file=str(template),
-                profile=profile,
             )
             detail = detect_image_detail(str(source_path), target)
             return {
@@ -1381,7 +1208,6 @@ class AnnotatorManager:
                 "roiFront": self._parse_roi(str(detail.get("roiFront", rule.get("roiFront", "0,0,100,100")))),
                 "roiBack": self._parse_roi(str(detail.get("roiBack", rule.get("roiBack", "0,0,100,100")))),
                 "threshold": threshold,
-                "profile": profile,
                 "message": str(detail.get("message", "not_match")),
                 "target_json": str(target_json.relative_to(task_root).as_posix()),
             }
@@ -1501,8 +1327,6 @@ class AnnotatorManager:
             payload = self._normalize_ocr_rules(rules) if rules else []
         elif rule_type == "click":
             payload = self._normalize_click_rules(rules) if rules else []
-        elif rule_type == "scatter":
-            payload = self._normalize_scatter_rules(rules) if rules else []
         elif rule_type == "swipe":
             payload = self._normalize_swipe_rules(rules) if rules else []
         elif rule_type == "long_click":
@@ -1615,3 +1439,13 @@ class AnnotatorManager:
 
 
 annotator_manager = AnnotatorManager()
+
+
+
+
+
+
+
+
+
+

@@ -10,12 +10,21 @@
   },
   {
     "itemName": "login_enter_game",
-    "roiFront": "592,558,96,89",
-    "roiBack": "587,553,106,99",
+    "roiFront": "589,544,101,107",
+    "roiBack": "558,574,154,49",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "进入",
+    "description": "Ocr-description"
+  },
+  {
+    "itemName": "login_enter_game_origin",
+    "roiFront": "550,567,176,56",
+    "roiBack": "558,574,154,49",
     "mode": "Single",
     "method": "Default",
     "keyword": "进入游戏",
-    "description": "Ocr-description"
+    "description": "兼容原先的进入游戏"
   },
   {
     "itemName": "login_skip_1",
@@ -27,15 +36,6 @@
     "description": "点击屏幕跳过"
   },
   {
-    "itemName": "login_animation_skip",
-    "roiFront": "1110,35,100,45",
-    "roiBack": "1135,40,70,35",
-    "mode": "Single",
-    "method": "Default",
-    "keyword": "跳过",
-    "description": "登录动画-跳过"
-  },
-  {
     "itemName": "login_specific_serve",
     "roiFront": "110,120,350,600",
     "roiBack": "110,120,350,600",
@@ -43,14 +43,5 @@
     "method": "Default",
     "keyword": "",
     "description": "登录指定角色，默认第一个"
-  },
-  {
-    "itemName": "login_enter_game_old",
-    "roiFront": "550,567,176,56",
-    "roiBack": "545,562,186,66",
-    "mode": "Single",
-    "method": "Default",
-    "keyword": "",
-    "description": ""
   }
 ]

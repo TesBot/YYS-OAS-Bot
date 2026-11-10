@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timedelta
 
 from module.base.timer import Timer
-from module.exception import TaskEnd, TaskRecoveryFailed
+from module.exception import TaskEnd
 from module.logger import logger
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import page_main
@@ -27,11 +27,12 @@ class ScriptTask(GameUi, GuildActivityMonitorAssets):
         today = now.weekday() + 1
         run_days = sorted({day for day in map(int, re.findall(r'\d+', monitor_config.run_days)) if 1 <= day <= 7})
         if not run_days:
-            raise TaskRecoveryFailed(f'GuildActivityMonitor 运行日期配置无效: {monitor_config.run_days}')
+            logger.warning(f"运行日期配置无效: {monitor_config.run_days}，跳过 GuildActivityMonitor")
+            return False
 
         in_run_days = today in run_days
         candidate_days = [day for day in run_days if day != today] if in_run_days else run_days
-        delta_days = min(((day - today) % 7 for day in candidate_days), default=7)
+        delta_days = min((day - today) % 7 for day in candidate_days)
         next_date = now + timedelta(days=delta_days or 7)
 
         server_update = self.config.guild_activity_monitor.scheduler.server_update
@@ -72,8 +73,8 @@ class ScriptTask(GameUi, GuildActivityMonitorAssets):
         log_timer.start()
 
         if use_ocr:
-            last_keyword = self.get_notification_info_ocr(keywords)
-            logger.info(f"初始通知关键字: {last_keyword or '无'}")
+            init_keyword = self.get_notification_info_ocr(keywords)
+            logger.info(f"初始通知关键字: {init_keyword or '无'}")
         else:
             init_time, _ = self.get_notification_info(keywords)
 
@@ -97,9 +98,8 @@ class ScriptTask(GameUi, GuildActivityMonitorAssets):
 
             if use_ocr:
                 notification_text = self.get_notification_info_ocr(keywords)
-                if notification_text and notification_text != last_keyword:
+                if notification_text and notification_text != init_keyword:
                     self.trigger_activity_task(notification_text, keyword_map[notification_text])
-                last_keyword = notification_text
             else:
                 current_time, notification_text = self.get_notification_info(keywords)
                 if current_time > init_time and notification_text:
@@ -107,14 +107,14 @@ class ScriptTask(GameUi, GuildActivityMonitorAssets):
                     if task_name:
                         self.trigger_activity_task(notification_text, task_name)
 
-            self.device.sleep(interval)
+            time.sleep(interval)
 
     def trigger_activity_task(self, keyword, task_name):
         """检测到活动关键字后拉起对应任务并结束监控"""
         logger.info(f"检测到关键字 '{keyword}'，启动任务: {task_name}")
         monitor_config = self.config.guild_activity_monitor.guild_activity_monitor_combat_time
-        self.set_next_run(task=task_name, success=None, finish=False, server=False, target=datetime.now())
-        self.set_next_run(task='GuildActivityMonitor', success=None, finish=False, server=False,
+        self.set_next_run(task=task_name, success=False, finish=False, server=False, target=datetime.now())
+        self.set_next_run(task='GuildActivityMonitor', success=False, finish=False, server=False,
                           target=datetime.now() + timedelta(minutes=monitor_config.recheck_interval))
         raise TaskEnd('GuildActivityMonitor')
 

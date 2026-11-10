@@ -31,7 +31,7 @@ class TrueOrochiAssets:
 
 	# Image Rule Assets
 	# 出现真蛇 
-	I_FIND_TS = RuleImage(roi_front=(266,648,90,63), roi_back=(175,603,289,117), threshold=0.8, method="Template matching", file="./tasks/TrueOrochi/st/st_find_ts.png")
+	I_FIND_TS = RuleImage(roi_front=(259,635,96,79), roi_back=(183,585,331,135), threshold=0.8, method="Template matching", file="./tasks/TrueOrochi/st/st_find_ts.png")
 	# 点击挑战60体力 
 	I_ST_FIRE = RuleImage(roi_front=(960,485,100,100), roi_back=(960,485,100,100), threshold=0.8, method="Template matching", file="./tasks/TrueOrochi/st/st_st_fire.png")
 	# 确认挑战 
@@ -58,10 +58,7 @@ class TrueOrochiAssets:
 	I_ST_CREATE_ROOM = RuleImage(roi_front=(528,482,223,62), roi_back=(528,482,223,62), threshold=0.8, method="Template matching", file="./tasks/TrueOrochi/st/st_st_create_room.png")
 	# 头像框 
 	I_ST_FRAME = RuleImage(roi_front=(571,442,135,65), roi_back=(571,442,135,65), threshold=0.8, method="Template matching", file="./tasks/TrueOrochi/st/st_st_frame.png")
-
-
-	# Ocr Rule Assets
-	# 本周剩余奖励次数 
-	O_TIMES = RuleOcr(roi=(461,388,40,26), area=(461,388,40,26), mode="DigitCounter", method="Default", keyword="", name="times")
+	# 玩法tab八岐大蛇模块，在场说明本周还有次数 
+	I_ST_MODULE = RuleImage(roi_front=(1111,322,84,22), roi_back=(1068,210,191,313), threshold=0.85, method="Template matching", file="./tasks/TrueOrochi/st/st_module.png")
 
 

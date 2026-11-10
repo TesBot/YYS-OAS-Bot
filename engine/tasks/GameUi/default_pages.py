@@ -1,79 +1,27 @@
 from __future__ import annotations
 
-from copy import copy
-
 from tasks.ActivityShikigami.assets import ActivityShikigamiAssets
 from tasks.Component.GeneralInvite.assets import GeneralInviteAssets
 from tasks.Component.SwitchAccount.assets import SwitchAccountAssets
 from tasks.Exploration.assets import ExplorationAssets
 from tasks.GameUi.action import conditional_action, sequence
-from tasks.GameUi.chess_battle import (
-    handle_chess_battle_page,
-    handle_chess_result_page,
-)
-from tasks.GameUi.courtyard import courtyard_visible, expand_courtyard_scroll
-from tasks.GameUi.town import town_visible
 from tasks.Pets.assets import PetsAssets
 from typing import Union
 
 """GameUi 全局页面定义。"""
 
 import random
-import time
 
-from module.exception import GamePageUnknownError
-from module.logger import logger
 from module.atom.click import RuleClick
-from module.base.timer import Timer
 from tasks.Component.GeneralBattle.assets import GeneralBattleAssets
-from tasks.Component.RightActivity.assets import RightActivityAssets
-from tasks.Chess.assets import ChessAssets
-from tasks.Component.Login.service import LoginService
-from tasks.DailyTrifles.assets import DailyTriflesAssets
 from tasks.GlobalGame.assets import GlobalGameAssets
 from tasks.GameUi.assets import GameUiAssets
 from tasks.GameUi.matcher import any_of, all_of
-from tasks.WantedQuests.assets import WantedQuestsAssets
-from tasks.GameUi.settlement_prompt import settlement_continue_click
 from tasks.GameUi.page_definition import Page
 from tasks.KekkaiUtilize.assets import KekkaiUtilizeAssets
 from tasks.Restart.assets import RestartAssets
 from tasks.RyouToppa.assets import RyouToppaAssets
-from tasks.RyouToppa.page_recognition import is_ryou_toppa_page
-
-
-HIGH_DENSITY_RANDOM_CLICK_TASKS = frozenset({
-    'ActivityShikigami',
-    'Exploration',
-})
-
-# 依据现有设备日志：这些任务的结算点击量较低，或运行频率极低。
-# 未列出的普通任务也默认按低密度处理，仅高密度任务显式传入 Scatter。
-LOW_DENSITY_RANDOM_CLICK_TASKS = frozenset({
-    'AbyssShadows', 'AreaBoss', 'DailyTrifles', 'Delegation',
-    'DemonEncounter', 'Dokan', 'Duel', 'GoldYoukai', 'GuildBanquet',
-    'Hunt', 'KekkaiUtilize', 'Orochi', 'RealmRaid', 'Restart',
-    'WantedQuests', 'WeeklyPurchase',
-})
-
-# 百鬼棋局虽然日志点击量低，但其奖励页有独立安全多边形，不走通用四区域。
-DEDICATED_SCATTER_RANDOM_CLICK_TASKS = frozenset({'Chess'})
-
-
-def settlement_random_click(area=None) -> RuleClick:
-    """低密度任务使用四区域中的左右区域；高密度任务显式传入 Scatter。"""
-    if area is None:
-        enabled_areas = (
-            GeneralBattleAssets.C_RANDOM_LEFT,
-            GeneralBattleAssets.C_RANDOM_RIGHT,
-        )
-        area = random.choice(enabled_areas)
-    # 每次只点击一次，由调用方截图验证状态再决定后续动作。
-    click = copy(area)
-    click.name = 'SETTLEMENT_RANDOM_CLICK'
-    click.burst_count = 1
-    click.burst_interval = (0.1, 0.2)
-    return click
+from tasks.WeeklyTrifles.assets import WeeklyTriflesAssets
 
 
 def random_click(
@@ -101,86 +49,9 @@ def random_click(
     return [click for _ in range(random.randint(low, high))]
 
 
-def reward_random_click() -> RuleClick:
-    """奖励页默认按低密度任务策略使用左右区域。"""
-    return settlement_random_click()
-
-
-def reward_details_visible(task) -> bool:
-    """识别奖励物品详情或御魂详情弹层。"""
-    return (
-        task.appear(GeneralBattleAssets.I_REWARD_PARTICULARS)
-        or task.appear(GeneralBattleAssets.I_REWARD_PARTICULARS_ORCHI)
-    )
-
-
-def close_reward_details(task) -> bool:
-    if not reward_details_visible(task):
-        return False
-    task.click(random_click(ltrb=(True, False, True, False)), interval=0.8)
-    return True
-
-
 def handle_login_page(task) -> bool:
-    return LoginService(config=task.config, device=task.device).app_handle_login()
-
-
-ACTIVITY_COLUMN_SWITCH_MAX_TRIES = 8
-
-
-def find_activity_entry(task) -> bool:
-    """循环切换庭院右侧活动栏目，直到公共活动入口出现。"""
-    switched = 0
-    for _ in range(ACTIVITY_COLUMN_SWITCH_MAX_TRIES):
-        task.screenshot()
-        if not task.appear(GameUiAssets.I_CHECK_MAIN):
-            return False
-        if task.appear(GameUiAssets.I_MAIN_GOTO_ACTIVITY):
-            return True
-        if task.appear_then_click(RightActivityAssets.I_TOGGLE_BUTTON, interval=0.5):
-            switched += 1
-        time.sleep(0.5)
-
-    task.screenshot()
-    if task.appear(GameUiAssets.I_MAIN_GOTO_ACTIVITY):
-        return True
-    logger.warning(
-        f'Activity entry not found after switching columns {switched} times '
-        f'({ACTIVITY_COLUMN_SWITCH_MAX_TRIES} checks)'
-    )
-    raise GamePageUnknownError('Cannot find common activity entry')
-
-
-def handle_activity_overlay(task) -> bool:
-    """清理活动奖励页和签到弹窗，直到稳定显示活动主页。"""
-    timer = Timer(15).start()
-    award_clicked = False
-    while not timer.reached():
-        task.screenshot()
-
-        if task.appear(GlobalGameAssets.I_UI_REWARD):
-            if not award_clicked:
-                logger.info('Clear activity award overlay via ui_reward')
-                task.click(GlobalGameAssets.C_UI_REWARD, interval=0)
-                task.device.click_record_clear()
-                award_clicked = True
-            time.sleep(0.2)
-            continue
-
-        if task.appear_then_click(GameUiAssets.I_ACTIVITY_SIGNIN_CLOSE, interval=0):
-            logger.info('Close activity sign-in overlay')
-            task.device.click_record_clear()
-            time.sleep(0.2)
-            continue
-
-        if task.appear(GameUiAssets.I_CHECK_ACTIVITY):
-            logger.info('Activity main page ready')
-            return True
-
-        time.sleep(0.2)
-
-    logger.warning('Activity main page overlays did not finish within 15s')
-    return False
+    from tasks.Restart.login import LoginHandler
+    return LoginHandler(config=task.config, device=task.device).app_handle_login()
 
 
 # 登录页。
@@ -188,83 +59,45 @@ page_login = Page(SwitchAccountAssets.I_CHECK_LOGIN_FORM, category="global")
 page_login.add_enter_success_hooks(handle_login_page)
 
 # 庭院主页(此处通过提高阈值来处理部分探索章节会识别成原始庭院的问题, 后续有其他更好方法需改善)
-page_main = Page(courtyard_visible, category="global")
+page_main = Page(GameUiAssets.I_CHECK_MAIN, category="global")
 page_main.add_enter_success_hooks(
-    expand_courtyard_scroll,
-    GameUiAssets.I_AD_CLOSE_RED, GlobalGameAssets.I_UI_BACK_RED, RestartAssets.I_CANCEL_BATTLE,
+    GameUiAssets.I_AD_CLOSE_RED, GlobalGameAssets.I_UI_BACK_RED, GlobalGameAssets.I_UI_CANCEL_SAMLL,
+    conditional_action(RestartAssets.I_LOGIN_COURTYARD, RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA),
 )
-
-# 阵容助手可能从多个页面误触进入，黄色返回会回到实际来源页。
-# 不绑定固定父页面；导航器识别到该无出边全局页后，使用全局未知页
-# 关闭动作点击黄色返回，再重新识别返回后的页面。
-page_lineup_helper = Page(
-    GameUiAssets.I_CHECK_LINEUP_HELPER,
-    category="global",
-    priority=90,
-)
-
-# 公共活动主页。各活动任务只负责从这里继续导航到各自玩法页面。
-page_activity = Page(
-    any_of(
-        GameUiAssets.I_CHECK_ACTIVITY,
-        GlobalGameAssets.I_UI_REWARD,
-        GameUiAssets.I_ACTIVITY_SIGNIN_CLOSE,
-    ),
-    category="global",
-)
-page_activity.add_enter_success_hooks(handle_activity_overlay)
-page_activity.add_enter_failure_hooks(
-    find_activity_entry,
-    conditional_action(GlobalGameAssets.I_UI_REWARD, reward_random_click),
-    GlobalGameAssets.I_UI_BACK_RED,
-    GameUiAssets.I_ACTIVITY_SKIP,
-)
-page_activity.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_activity->page_main")
-page_main.connect(page_activity, GameUiAssets.I_MAIN_GOTO_ACTIVITY, key="page_main->page_activity")
-
-# 闲庭使用独立设置图标识别，不依赖庭院皮肤；返回后由导航器截图确认到达庭院。
-page_relax = Page(
-    GameUiAssets.I_CHECK_MAIN_SET,
-    category="global",
-    priority=90,
-)
-page_relax.connect(page_main, GameUiAssets.I_BACK_BROWN, key="page_relax->page_main")
 
 # 庭院区域页面。
 page_shikigami_records = Page(GameUiAssets.I_CHECK_RECORDS, category="global")
-page_shikigami_records.add_enter_failure_hooks(expand_courtyard_scroll)
+page_shikigami_records.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                                  action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_shikigami_records.add_enter_success_hooks(GlobalGameAssets.I_UI_CANCEL_SAMLL)
 page_shikigami_records.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_shikigami_records->page_main")
 page_main.connect(page_shikigami_records, GameUiAssets.I_MAIN_GOTO_SHIKIGAMI_RECORDS, key="page_main->page_shikigami_records")
 
 page_onmyodo = Page(GameUiAssets.I_CHECK_ONMYODO, category="global")
-page_onmyodo.add_enter_failure_hooks(expand_courtyard_scroll)
+page_onmyodo.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                        action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_onmyodo.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_onmyodo->page_main")
 page_main.connect(page_onmyodo, GameUiAssets.I_MAIN_GOTO_ONMYODO, key="page_main->page_onmyodo")
 
 page_friends = Page(GameUiAssets.I_CHECK_FRIENDS, category="global")
-page_friends.add_enter_failure_hooks(expand_courtyard_scroll)
+page_friends.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                        action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_friends.connect(page_main, GlobalGameAssets.I_UI_BACK_RED, key="page_friends->page_main")
 page_friends.add_leave_failure_hooks(GlobalGameAssets.I_UI_BACK_RED)
 page_main.connect(page_friends, GameUiAssets.I_MAIN_GOTO_FRIENDS, key="page_main->page_friends")
 
 page_daily = Page(GameUiAssets.I_CHECK_DAILY, category="global")
 page_daily.add_enter_failure_hooks(
-    expand_courtyard_scroll,
+    conditional_action(condition=GameUiAssets.I_CHECK_MAIN, action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA),
     conditional_action(condition=lambda task: not task.appear(GameUiAssets.I_CHECK_MAIN),
                        action=lambda task: task.ui_click(click=random_click(ltrb=(False, False, False, True)),
                                                          stop=GlobalGameAssets.I_UI_BACK_YELLOW)))
 page_daily.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_daily->page_main")
 page_main.connect(page_daily, GameUiAssets.I_MAIN_GOTO_DAILY, key="page_main->page_daily")
 
-page_courtyard_affairs = Page(DailyTriflesAssets.I_CHECK_COURTYARD_AFFAIRS, category="global")
-page_main.connect(page_courtyard_affairs, DailyTriflesAssets.I_ENTER_COURTYARD_AFFAIRS, key="page_main->page_courtyard_affairs")
-page_courtyard_affairs.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_courtyard_affairs->page_main")
-page_courtyard_affairs.add_leave_failure_hooks(GlobalGameAssets.I_UI_CANCEL_SAMLL, GlobalGameAssets.I_UI_BACK_RED,
-                                               ActivityShikigamiAssets.I_SKIP_BUTTON, GlobalGameAssets.I_UI_BACK_YELLOW)
-
-page_mall = Page(GameUiAssets.I_CHECK_MALL, category="global")
-page_mall.add_enter_failure_hooks(expand_courtyard_scroll)
+page_mall = Page(any_of(GameUiAssets.I_CHECK_MALL, GameUiAssets.I_CHECK_MALL_PURPLE), category="global")
+page_mall.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                     action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_mall.add_enter_success_hooks(GameUiAssets.I_AD_CLOSE_RED, GlobalGameAssets.I_UI_BACK_RED, GlobalGameAssets.I_UI_CANCEL_SAMLL)
 page_mall.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_mall->page_main")
 
@@ -276,27 +109,44 @@ page_main.connect(page_mall_recommend, GameUiAssets.I_MAIN_GOTO_MALL, key="page_
 
 page_guild = Page(GameUiAssets.I_CHECK_GUILD, category="global")
 page_guild.add_enter_success_hooks(KekkaiUtilizeAssets.I_PLANT_TREE_CLOSE)
-page_guild.add_enter_failure_hooks(expand_courtyard_scroll)
+page_guild.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                      action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_guild.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_guild->page_main")
 page_main.connect(page_guild, GameUiAssets.I_MAIN_GOTO_GUILD, key="page_main->page_guild")
+
+# 摸鱼行动页面。
+page_touch_fish = Page(WeeklyTriflesAssets.I_CHECK_TOUCH_FISH, category="global")
+page_guild.connect(
+    page_touch_fish,
+    WeeklyTriflesAssets.I_GUILD_GOTO_TF,
+    key="page_guild->page_touch_fish",
+)
+page_touch_fish.connect(
+    page_main,
+    WeeklyTriflesAssets.I_WT_TF_GOTO_MAIN,
+    key="page_touch_fish->page_main",
+)
 
 page_shirin = Page(GameUiAssets.I_CHECK_SHRIN, category="global")
 page_guild.connect(page_shirin, GameUiAssets.I_GUILD_TO_SHRIN, key="page_guild->page_shirin")
 page_shirin.connect(page_guild, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_shirin->page_guild")
 
 page_team = Page(GameUiAssets.I_CHECK_TEAM, category="global")
-page_team.add_enter_failure_hooks(expand_courtyard_scroll)
+page_team.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                     action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_team.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_team->page_main")
 page_main.connect(page_team, GameUiAssets.I_MAIN_GOTO_TEAM, key="page_main->page_team")
 
 page_collection = Page(GameUiAssets.I_CHECK_COLLECTION, category="global")
 page_collection.add_enter_success_hooks(GlobalGameAssets.I_UI_CANCEL_SAMLL)
-page_collection.add_enter_failure_hooks(expand_courtyard_scroll)
+page_collection.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                           action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_collection.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_collection->page_main")
 page_main.connect(page_collection, GameUiAssets.I_MAIN_GOTO_COLLECTION, key="page_main->page_collection")
 
 page_travel = Page(GameUiAssets.I_CHECK_TRAVEL, category="global")
-page_travel.add_enter_failure_hooks(expand_courtyard_scroll)
+page_travel.add_enter_failure_hooks(conditional_action(condition=GameUiAssets.I_CHECK_MAIN,
+                                                       action=RestartAssets.C_LOGIN_SCROLL_CLOSE_AREA))
 page_travel.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_travel->page_main")
 page_main.connect(page_travel, GameUiAssets.I_MAIN_GOTO_TRAVEL, key="page_main->page_travel")
 
@@ -318,67 +168,16 @@ page_summon.connect(page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_summ
 page_main.connect(page_summon, GameUiAssets.I_MAIN_GOTO_SUMMON, key="page_main->page_summon")
 
 # 町中主页。
-# priority 高于 page_main(50)：町中沿用同一排底部菜单，识别层已让位
-# （courtyard_visible 见 town_visible 即返回 False），这里再从排序层兜一层，
-# 使结论不依赖「谁注册得早」。判据冲突的完整实测见 tasks/GameUi/courtyard.py。
-page_town = Page(town_visible, category="global", priority=60)
+page_town = Page(GameUiAssets.I_CHECK_TOWN, category="global")
 page_town.connect(page_main, GameUiAssets.I_TOWN_GOTO_MAIN, key="page_town->page_main")
 page_main.connect(page_town, GameUiAssets.I_MAIN_GOTO_TOWN, key="page_main->page_town")
 
 # 町中区域页面。
 page_entertainment = Page(GameUiAssets.I_CHECK_ENTERTAINMENT, category="global")
-page_entertainment.add_enter_success_hooks(ChessAssets.I_SKIP)
 page_town.connect(
     page_entertainment,
     GameUiAssets.I_TOWN_GOTO_ENTERTAINMENT,
     key="page_town->page_entertainment",
-    on_enter_failure=[ChessAssets.I_SKIP],
-)
-
-page_chess = Page(GameUiAssets.I_CHECK_CHESS, category="global")
-page_entertainment.connect(
-    page_chess,
-    GameUiAssets.I_ENTERTAINMENT_GOTO_CHESS,
-    key="page_entertainment->page_chess",
-    on_leave_failure=[ChessAssets.I_SKIP],
-    on_enter_failure=[ChessAssets.I_SKIP],
-)
-page_chess.connect(
-    page_entertainment,
-    GlobalGameAssets.I_UI_BACK_YELLOW,
-    key="page_chess->page_entertainment",
-)
-
-# 棋局内页面属于全局异常恢复节点。任意任务启动时若停留在遗留棋局，
-# 导航器会先调用统一退出流程返回棋局大厅，再继续规划原目标页面。
-page_chess_battle = Page(
-    GameUiAssets.I_CHECK_CHESS_BATTLE,
-    category="global",
-    priority=95,
-)
-page_chess_battle.connect(
-    page_chess,
-    handle_chess_battle_page,
-    key="page_chess_battle->page_chess",
-)
-# 棋局可能在脚本已判定进入超时后才落到名次结算页。将全部既有结算
-# 标志注册为独立全局页面，使任何导航过程都能继续结算并返回大厅。
-page_chess_result = Page(
-    any_of(
-        GameUiAssets.I_CHESS_EXIT_TO_LOBBY,
-        GameUiAssets.I_CHESS_EXIT_TO_LOBBY_2,
-        ChessAssets.I_REWARD_CHESS,
-        ChessAssets.I_SHARE,
-        GameUiAssets.I_CHECK_CHESS_RANK,
-        GameUiAssets.I_CHESS_RANK_GOTO_LOBBY,
-    ),
-    category="global",
-    priority=96,
-)
-page_chess_result.connect(
-    page_chess,
-    handle_chess_result_page,
-    key="page_chess_result->page_chess",
 )
 page_entertainment.connect(
     page_town,
@@ -393,6 +192,11 @@ page_town.connect(page_duel, GameUiAssets.I_TOWN_GOTO_DUEL, key="page_town->page
 page_demon_encounter = Page(GameUiAssets.I_CHECK_DEMON_ENCOUNTER_2, category="global")
 page_demon_encounter.connect(page_town, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_demon_encounter->page_town")
 page_town.connect(page_demon_encounter, GameUiAssets.I_TOWN_GOTO_DEMON_ENCOUNTER, key="page_town->page_demon_encounter")
+
+# 现世逢魔页面。
+page_demon_encounter_realworld = Page(GameUiAssets.I_CHECK_DEMON_ENCOUNTER_REALWORLD, category="global")
+page_demon_encounter_realworld.connect(page_demon_encounter, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_demon_encounter_realworld->page_demon_encounter")
+page_demon_encounter.connect(page_demon_encounter_realworld, GameUiAssets.I_DEMON_ENCOUNTER_REALWORLD_GOTO, key="page_demon_encounter->page_demon_encounter_realworld")
 
 page_hunt = Page(GameUiAssets.I_CHECK_HUNT, category="global")
 page_hunt.connect(page_town, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_hunt->page_town")
@@ -431,7 +235,7 @@ page_realm_raid.connect(page_exploration, GlobalGameAssets.I_UI_BACK_RED, key="p
 page_realm_raid.connect(page_shikigami_records, GameUiAssets.I_REALM_RAID_GOTO_SHIKIGAMI_RECORDS, key="page_realm_raid->page_shikigami_records")
 page_exploration.connect(page_realm_raid, GameUiAssets.I_EXPLORATION_GOTO_REALM_RAID, key="page_exploration->page_realm_raid")
 
-page_kekkai_toppa = Page(is_ryou_toppa_page, category="global", priority=85)
+page_kekkai_toppa = Page(GameUiAssets.I_KEKKAI_TOPPA, category="global")
 page_kekkai_toppa.connect(page_exploration, GlobalGameAssets.I_UI_BACK_RED, key="page_kekkai_toppa->page_exploration")
 page_kekkai_toppa.connect(page_shikigami_records, GameUiAssets.I_REALM_RAID_GOTO_SHIKIGAMI_RECORDS, key="page_kekkai_toppa->page_shikigami_records")
 page_realm_raid.connect(page_kekkai_toppa, RyouToppaAssets.I_RYOU_TOPPA, key="page_realm_raid->page_kekkai_toppa")
@@ -447,29 +251,10 @@ page_exploration.connect(page_delegation, GameUiAssets.I_EXPLORATION_GOTO_DELEGA
 
 page_secret_zones = Page(GameUiAssets.I_CHECK_SECRET_ZONES, category="global")
 page_secret_zones.connect(page_exploration, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_secret_zones->page_exploration")
-
-# Secret chapter rewards share battle reward icons. Identify the chapter by
-# its challenge button AND red close control, then return through the zone list.
-page_secret_chapter = Page(
-    all_of(WantedQuestsAssets.I_WQSE_FIRE, GlobalGameAssets.I_UI_BACK_RED),
-    key="page_secret_chapter", category="global", priority=55,
-)
-page_secret_chapter.connect(page_secret_zones, GlobalGameAssets.I_UI_BACK_RED,
-                            key="page_secret_chapter->page_secret_zones")
-
 page_exploration.connect(page_secret_zones, GameUiAssets.I_EXPLORATION_GOTO_SECRET_ZONES, key="page_exploration->page_secret_zones")
 
 page_area_boss = Page(GameUiAssets.I_CHECK_AREA_BOSS, category="global")
 page_area_boss.connect(page_exploration, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_area_boss->page_exploration")
-
-# The formation share page has a blue return control, not the generic yellow arrow.
-# Register globally so GotoMain can recover the same page outside WeeklyTrifles.
-from tasks.GameUi.area_boss_share_page import is_area_share_page, I_AREA_SHARE_BACK
-page_area_boss_share = Page(is_area_share_page, key="page_area_boss_share",
-                            category="global", priority=70)
-page_area_boss_share.connect(page_area_boss, I_AREA_SHARE_BACK,
-                             key="page_area_boss_share->page_area_boss")
-
 page_exploration.connect(page_area_boss, GameUiAssets.I_EXPLORATION_GOTO_AREA_BOSS, key="page_exploration->page_area_boss")
 
 page_heian_kitan = Page(GameUiAssets.I_CHECK_HEIAN_KITAN, category="global")
@@ -548,10 +333,7 @@ page_battle_result = Page(
     category="global",
     priority=25
 )
-page_battle_result.add_enter_success_hooks(
-    lambda task: task._battle_settlement_click()
-    if hasattr(task, '_battle_settlement_click') else settlement_continue_click(task)
-)
+page_battle_result.add_enter_success_hooks(lambda _task: random_click())
 
 page_reward = Page(
     any_of(
@@ -566,7 +348,6 @@ page_reward = Page(
         GeneralBattleAssets.I_REWARD_SOUL_5,
         GeneralBattleAssets.I_REWARD_SOUL_6,
         GlobalGameAssets.I_UI_REWARD,
-        reward_details_visible,
     ),
     category="global",
     priority=25
@@ -581,12 +362,9 @@ def handle_battle_reward_page(task) -> bool:
     Returns:
         bool: 执行结果
     """
-    if close_reward_details(task):
-        return True
     if task.appear_then_click(GeneralBattleAssets.I_OVER_GHOST, interval=0.8):
         return True
-    target = settlement_continue_click(task)
-    return bool(target is not None and task.click(target, interval=0.8))
+    return task.click(random_click(), interval=0.8)
 
 page_reward.add_enter_success_hooks(handle_battle_reward_page)
 
@@ -596,37 +374,3 @@ page_battle_team = Page(any_of(GeneralInviteAssets.I_GI_EMOJI_1, GeneralInviteAs
                         category="global", priority=25)
 page_battle_team_exit.connect(page_battle_team, GlobalGameAssets.I_UI_CANCEL, key="page_battle_team_exit->page_battle_team")
 page_battle_team.connect(page_battle_team_exit, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_battle_team->page_battle_team_exit")
-
-# Current version hub is a separate return layer, verified from live frames.
-from tasks.GameUi.version_activity_ui import (is_hub, is_trial, enter_version_hub,
-                                              C_MAP, C_RUINS, C_TRIAL)
-page_version_hub = Page(is_hub, key="page_version_hub", category="global", priority=35)
-page_version_hub.connect(page_act_list, GlobalGameAssets.I_UI_BACK_YELLOW,
-                         key="page_version_hub->page_act_list")
-page_main.connect(page_version_hub, enter_version_hub, key="page_main->page_version_hub")
-page_act_list.connect(page_version_hub, enter_version_hub,
-                      key="page_act_list->page_version_hub")
-
-# Current activity map: recognize only its homepage and expose a return edge.
-# No entry hook, reward action or activity task is added.
-from tasks.GameUi.activity_map_exit import is_activity_map_home, I_ACTIVITY_MAP_BACK, enter_activity_ruins, enter_activity_trial
-page_activity_map_home = Page(is_activity_map_home, key="page_activity_map_home",
-                              category="global", priority=35)
-page_activity_map_home.connect(page_version_hub, I_ACTIVITY_MAP_BACK,
-                               key="page_activity_map_home->page_version_hub")
-
-from tasks.GameUi.activity_map_exit import is_activity_stage
-page_activity_stage = Page(is_activity_stage, key="page_activity_stage",
-                           category="global", priority=35)
-page_activity_stage.connect(page_activity_map_home, GlobalGameAssets.I_UI_BACK_YELLOW,
-                            key="page_activity_stage->page_activity_map_home")
-
-page_version_hub.connect(page_activity_map_home, C_MAP,
-                         key="page_version_hub->page_activity_map_home")
-page_activity_map_home.connect(page_activity_stage, enter_activity_ruins,
-                               key="page_activity_map_home->page_activity_stage")
-page_version_trial = Page(is_trial, key="page_version_trial", category="global", priority=35)
-page_version_trial.connect(page_activity_map_home, GlobalGameAssets.I_UI_BACK_YELLOW,
-                            key="page_version_trial->page_activity_map_home")
-page_activity_map_home.connect(page_version_trial, enter_activity_trial,
-                               key="page_activity_map_home->page_version_trial")

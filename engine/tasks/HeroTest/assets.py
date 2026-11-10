@@ -99,18 +99,6 @@ class HeroTestAssets:
 	I_HERO2_SKILL3 = RuleImage(roi_front=(520,358,62,38), roi_back=(41,346,1172,63), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill3.png")
 	# 速度祝福 
 	I_HERO2_SKILL6 = RuleImage(roi_front=(427,356,62,38), roi_back=(48,342,1175,67), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill6.png")
-	# 遏云 
-	I_HERO2_SKILL7 = RuleImage(roi_front=(823,355,64,41), roi_back=(54,344,1170,74), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill7.png")
-	# 音迹 
-	I_HERO2_SKILL8 = RuleImage(roi_front=(221,353,60,40), roi_back=(54,343,1167,73), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill8.png")
-	# 泛音 
-	I_HERO2_SKILL9 = RuleImage(roi_front=(219,356,60,38), roi_back=(50,342,1169,73), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill9.png")
-	# 凝啸 
-	I_HERO2_SKILL10 = RuleImage(roi_front=(1127,356,59,40), roi_back=(53,345,1169,74), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill10.png")
-	# 逐空 
-	I_HERO2_SKILL11 = RuleImage(roi_front=(521,357,60,39), roi_back=(48,342,1172,74), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill11.png")
-	# 伤害加成 
-	I_HERO2_SKILL12 = RuleImage(roi_front=(1034,354,122,41), roi_back=(53,341,1172,74), threshold=0.8, method="Template matching", file="./tasks/HeroTest/as/as_hero2_skill12.png")
 
 
 	# Ocr Rule Assets
@@ -119,7 +107,7 @@ class HeroTestAssets:
 	# 兵藏秘境兵道帖 
 	O_ART_WAR_CARD = RuleOcr(roi=(712,21,98,36), area=(712,21,98,36), mode="DigitCounter", method="Default", keyword="", name="art_war_card")
 	# 兵道帖机密 
-	O_ART_WAR_CARD_PLUS = RuleOcr(roi=(916,25,90,29), area=(916,25,90,29), mode="SINGLE", method="Default", keyword="", name="art_war_card_plus")
+	O_ART_WAR_CARD_PLUS = RuleOcr(roi=(916,25,90,29), area=(916,25,90,29), mode="Digit", method="Default", keyword="", name="art_war_card_plus")
 	# 挑战按钮 
 	O_FIRE = RuleOcr(roi=(1130,585,92,55), area=(1126,576,100,99), mode="Single", method="Default", keyword="挑战", name="fire")
 

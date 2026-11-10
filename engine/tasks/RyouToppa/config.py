@@ -21,7 +21,13 @@ class RaidConfig(BaseModel):
     # 正式进攻会设定 2s - 10s 的随机延迟，避免攻击间隔及其相近被检测为脚本。
     random_delay: bool = Field(default=False, description='random_delay_help')
 
-    # 没有进攻机会或寮突破尚未开启：本次正常结束，按配置间隔再检查
+
+    # raid_mode: RaidMode = Field(title='Raid Mode', default=RaidMode.ATTACK_ALL,
+    #                             description='raid_mode_help')
+    # attack_number: AttackNumber = Field(title='Attack Number', default=AttackNumber.ALL,
+    #                                     description='')
+    # 打完没票了 0/6 => 失败
+    # 突破压根没开  +> 失败
     # 时间打满了  成功
     # 次数打满了  成功
     # 打完了（有失败的但是大不了） 成功

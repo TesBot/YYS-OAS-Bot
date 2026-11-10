@@ -39,8 +39,6 @@ class RealmRaidAssets:
 	I_FIRE = RuleImage(roi_front=(982,494,136,63), roi_back=(140,129,1024,584), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_fire.png")
 	# 打完个后出现的领取奖励 
 	I_SOUL_RAID = RuleImage(roi_front=(577,502,100,100), roi_back=(577,502,100,100), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_soul_raid.png")
-	# 刷新确认/再战确认 
-	I_FRESH_ENSURE = RuleImage(roi_front=(672,403,173,59), roi_back=(672,403,173,59), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_fresh_ensure.png")
 	# 没有锁图片，适配呱太入侵 
 	I_UNLOCK_2 = RuleImage(roi_front=(1002,643,30,41), roi_back=(1002,643,30,41), threshold=0.9, method="Template matching", file="./tasks/RealmRaid/res/res_unlock_2.png")
 	# 以锁图片，适配呱太 
@@ -51,14 +49,6 @@ class RealmRaidAssets:
 	I_MEDAL_3_2 = RuleImage(roi_front=(575,489,188,32), roi_back=(575,489,188,32), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_medal_3_2.png")
 	# description 
 	I_MEDAL_3_3 = RuleImage(roi_front=(902,479,201,50), roi_back=(902,479,201,50), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_medal_3_3.png")
-	# 失败再次挑战 
-	I_FIRE_AGAIN = RuleImage(roi_front=(830,506,61,36), roi_back=(256,384,773,231), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_fire_again.png")
-	# 不再提示 
-	I_SHOW_AGAIN = RuleImage(roi_front=(539,344,32,36), roi_back=(397,218,485,275), threshold=0.8, method="Template matching", file="./tasks/RealmRaid/res/res_show_again.png")
-	# 2026.10.10 改版「是否再次挑战?」对话框: 问句区域，用于与其它同款对话框消歧
-	I_RAID_CONFIRM_Q = RuleImage(roi_front=(550,265,183,34), roi_back=(520,250,260,60), threshold=0.9, method="Template matching", file="./tasks/RealmRaid/res/res_raid_confirm_q.png")
-	# 2026.10.10 改版「是否再次挑战?」对话框: 金色「确定」按钮
-	I_RAID_CONFIRM_ENSURE = RuleImage(roi_front=(658,401,192,84), roi_back=(630,385,230,105), threshold=0.9, method="Template matching", file="./tasks/RealmRaid/res/res_raid_confirm_ensure.png")
 
 
 	# Image Rule Assets
@@ -120,6 +110,3 @@ class RealmRaidAssets:
 	C_PARTITION_9 = RuleClick(roi_front=(900,418,222,116), roi_back=(900,418,222,116), name="partition_9")
 
 
-
-	# Refresh warning must be present together with the updated gold button.
-	I_RAID_REFRESH_Q = RuleImage(roi_front=(435,282,410,65), roi_back=(415,265,450,100), threshold=0.9, method="Template matching", file="./tasks/RealmRaid/res/res_raid_refresh_q.png")
