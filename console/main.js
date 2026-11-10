@@ -43,16 +43,47 @@ function saveSettings(patch) {
   return data;
 }
 
-// 整包布局：安装目录 resources\engine；Python 运行时独立分发，位于 resources\python
+// 整包布局：安装目录 resources\engine
 function bundledEngineDir() {
   if (!app.isPackaged) return null;
   return path.join(process.resourcesPath, 'engine');
 }
 
-// 运行时目录：打包后 resources\python；开发环境 <仓库>/runtime/python
+// 旧版运行时位置（安装目录 resources\python）。覆盖安装/升级时会被 NSIS 删除，
+// 仅用于一次性迁移到用户目录。
+function legacyRuntimeDir() {
+  if (!app.isPackaged) return path.join(__dirname, '..', 'runtime', 'python');
+  return path.join(process.resourcesPath, 'python');
+}
+
+// 运行时目录：放在用户本地数据目录，升级/重装主程序都不会被删除，
+// 只有首次安装才需要下载解压一次。
+//   打包：%LOCALAPPDATA%\OAS Studio\runtime\python
+//   开发：<仓库>\runtime\python
 function runtimeDir() {
-  return app.isPackaged ? path.join(process.resourcesPath, 'python')
-    : path.join(__dirname, '..', 'runtime', 'python');
+  if (!app.isPackaged) return path.join(__dirname, '..', 'runtime', 'python');
+  const base = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local');
+  return path.join(base, 'OAS Studio', 'runtime', 'python');
+}
+
+// 老版本把运行时解压到安装目录里，升级时搬一次，避免让用户重新下载 220MB。
+function migrateLegacyRuntime() {
+  try {
+    const target = runtimeDir();
+    if (fs.existsSync(path.join(target, 'python.exe'))) return false;
+    const legacy = legacyRuntimeDir();
+    if (legacy === target || !fs.existsSync(path.join(legacy, 'python.exe'))) return false;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    try {
+      fs.renameSync(legacy, target); // 同盘瞬间完成
+    } catch {
+      fs.cpSync(legacy, target, { recursive: true });
+      fs.rmSync(legacy, { recursive: true, force: true });
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function runtimeStatus() {
@@ -70,8 +101,8 @@ function runtimeStatus() {
 //   开发布局：仓库 runtime\python，或引擎自带 .venv
 function findPython(engineDir) {
   const candidates = [
-    path.join(engineDir, '..', 'python', 'python.exe'),
-    path.join(runtimeDir(), 'python.exe'),
+    path.join(runtimeDir(), 'python.exe'),        // 用户目录（默认，跨版本保留）
+    path.join(legacyRuntimeDir(), 'python.exe'),  // 旧版安装目录布局（迁移前）
     path.join(engineDir, '.venv', 'Scripts', 'python.exe'),
   ];
   return candidates.find((p) => fs.existsSync(p)) || null;
@@ -439,6 +470,9 @@ protocol.registerSchemesAsPrivileged([
 app.whenReady().then(async () => {
   registerAppProtocol();
   buildMenu();
+
+  // 老版本运行时在安装目录内，升级后先搬到用户目录再判断
+  migrateLegacyRuntime();
 
   // 生效引擎：用户覆盖 > 内置引擎（安装包自带，无需任何配置）
   const engineDir = activeEngineDir();
