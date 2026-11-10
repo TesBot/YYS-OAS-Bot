@@ -305,10 +305,23 @@ const WINDOW_OPTS = {
   webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
 };
 
+// 只放行 http/https 给系统外壳。
+// shell.openExternal 会把任意字符串丢给 ShellExecute：空串、相对路径、未知协议
+// 在 Win11 上可能被解析成「找一个应用来打开」→ 直接弹出 Microsoft Store。
+// 这里统一收口，非 http(s) 一律忽略。
+function openExternalSafe(url) {
+  try {
+    const u = new URL(String(url));
+    if (u.protocol === 'http:' || u.protocol === 'https:') {
+      shell.openExternal(u.toString());
+    }
+  } catch { /* 非法 URL 直接忽略 */ }
+}
+
 function attachCommon(win) {
   win.setMenuBarVisibility(false);
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
 }
@@ -469,7 +482,7 @@ ipcMain.handle('install-runtime-zip', async (_e, zipPathArg) => {
   }
 });
 
-ipcMain.handle('open-external', (_e, url) => shell.openExternal(url));
+ipcMain.handle('open-external', (_e, url) => openExternalSafe(url));
 
 let bridgeStarting = false; // 向导→主窗口过渡期，防止零窗口时误判退出
 
@@ -598,17 +611,20 @@ if (singleInstance) {
 // 但「正常退出」经常不够干净：Electron 的 GPU / 渲染 / Utility 进程也全是
 // OAS Studio.exe，主进程退出时它们可能卡在 D3D 收尾上十几秒；安装器是按
 // 「exe 路径以安装目录开头」判断程序是否在运行的，于是重装就弹「无法关闭」。
-// 所以这里加两级兜底：1.2 秒还没退干净 → 把同目录的兄弟进程收掉；
-// 2.2 秒还在 → 直接 app.exit()。
-function sweepSiblings() {
+// 所以这里用**和安装器完全相同的判据**做一次清扫：凡是 exe 路径位于安装目录
+// 之下、又不是自己的进程，全部结束掉。两边判据一致，安装器就不会再看到残留。
+function sweepInstallDir() {
   if (process.platform !== 'win32') return;
   try {
-    const exe = process.execPath.replace(/'/g, "''");
+    const dir = path.dirname(process.execPath).replace(/'/g, "''");
     const script =
-      `Get-CimInstance Win32_Process | Where-Object { $_.Path -eq '${exe}' ` +
+      `Get-CimInstance Win32_Process | Where-Object { $_.Path -and ` +
+      `$_.Path.StartsWith('${dir}', 'CurrentCultureIgnoreCase') ` +
       `-and $_.ProcessId -ne ${process.pid} } | ` +
       'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }';
-    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], {
+    // 必须用绝对路径调用，避免命中 PATH 里的 App Execution Alias（可能弹出商店）
+    const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const child = spawn(ps, ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], {
       windowsHide: true,
       detached: true,
       stdio: 'ignore',
@@ -622,7 +638,7 @@ function beginQuit() {
   if (quitting) return;
   quitting = true;
   stopBridge();
-  const sweep = setTimeout(sweepSiblings, 1200);
+  const sweep = setTimeout(sweepInstallDir, 1200);
   const hard = setTimeout(() => {
     try { app.exit(0); } catch { process.exit(0); }
   }, 2200);

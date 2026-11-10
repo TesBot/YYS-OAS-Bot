@@ -1,58 +1,70 @@
 ; OAS Studio 安装器定制
 ;
-; 背景：electron-builder 默认的 CHECK_APP_RUNNING 是
-;   发现 $INSTDIR 下有进程 → 弹「正在运行」→ 结束进程 → 重试 3 次（约 6 秒）
-;   → 还在就弹「无法关闭 / 重试」。
+; 为什么要改：
+;   electron-builder 默认的 CHECK_APP_RUNNING 只检查「exe 路径以 $INSTDIR 开头」
+;   的进程，而本项目的 Python 桥接服务在 %LOCALAPPDATA%\OAS Studio\runtime\python，
+;   路径完全不在安装目录里 —— 安装器看不见它，也就不会去结束它。
+;   但它的工作目录正是 $INSTDIR\resources\engine，进程里开着 bridge.py 和一堆
+;   .py/.pyc，旧版卸载器删不掉这些文件 → 卸载器返回非 0 → installUtil.nsh 的
+;   uninstallOldVersion 重试 5 次后弹出「$(appCannotBeClosed)」= 「无法关闭」。
+;   这就是「重装必弹一次、点重试又能装好」的真正原因。
 ;
-; 实测那 6 秒不够：Windows 上一个正在终止的进程（尤其是卡在 D3D 收尾的
-; GPU 子进程）会在进程表里残留十几秒，Stop-Process 之后依然能被查到。
-; 于是每次重装都要点一次「无法关闭 → 重试」。
+; 所以这里把判据从「只看 exe 路径」扩成：
+;     exe 路径在 $INSTDIR 下  或者  命令行里出现了 $INSTDIR
+; 后者正好命中 python -X utf8 -B <安装目录>\resources\engine\gui\bridge.py。
 ;
-; 这里换成「静默等待 + 两次强杀 + 最后才打扰用户」：
-;   1. 先安静等 1.5 秒，给上次的残留进程自己退干净的机会；
-;   2. 第 1.5 秒、第 6 秒各强杀一次（按安装目录路径精确匹配）；
-;   3. 等满 25 秒还在，才弹出原来的「无法关闭」对话框（保留兜底）。
-;
-; 注意：本宏在 allowOnlyOneInstallerInstance.nsh 之前被 include，真正展开发生在
-; CHECK_APP_RUNNING 里，那时 FIND_PROCESS 已经定义，可以直接复用。
-; 但 KILL_PROCESS 内部引用了 $pid，而 $pid 只在「没有 customCheckAppRunning」
-; 时才会声明（见 allowOnlyOneInstallerInstance.nsh 顶部），所以这里不用它，
-; 自己写一条不依赖 $pid 的强杀命令。
+; 另外全程不弹任何对话框：等待 + 强杀循环执行，45 秒仍不行才继续安装。
+
+!echo "OAS-INSTALLER-PATCH-ACTIVE"
+
+; 探测：$R0 == 0 表示还有残留，!= 0 表示干净
+; $R9 = 本进程 PID，排除自己（万一安装包被放在安装目录里，否则会自杀）
+!macro oas_detect
+  System::Call 'kernel32::GetCurrentProcessId() i .r9'
+  ${if} $IsPowerShellAvailable == 0
+    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -C "if ((Get-CimInstance Win32_Process | ? { $$_.ProcessId -ne $R9 } | ? { ($$_.Path -and $$_.Path.StartsWith('$INSTDIR','CurrentCultureIgnoreCase')) -or ($$_.CommandLine -like '*$INSTDIR*') }).Count -gt 0) { exit 0 } else { exit 1 }"`
+  ${else}
+    nsExec::Exec `"$CmdPath" /C tasklist /FI "IMAGENAME eq ${APP_EXECUTABLE_FILENAME}" /FO CSV /NH | "$SYSDIR\findstr.exe" /B /I /C:"\"${APP_EXECUTABLE_FILENAME}\""`
+  ${endIf}
+  Pop $R0
+!macroend
+
+; 强杀：结束所有「路径在安装目录下」或「命令行提到安装目录」的进程（不含自己）
+!macro oas_kill
+  System::Call 'kernel32::GetCurrentProcessId() i .r9'
+  ${if} $IsPowerShellAvailable == 0
+    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -C "Get-CimInstance Win32_Process | ? { $$_.ProcessId -ne $R9 } | ? { ($$_.Path -and $$_.Path.StartsWith('$INSTDIR','CurrentCultureIgnoreCase')) -or ($$_.CommandLine -like '*$INSTDIR*') } | % { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"`
+    Pop $R0
+  ${endIf}
+  nsExec::Exec `taskkill /F /IM "${APP_EXECUTABLE_FILENAME}"`
+  Pop $R0
+!macroend
 
 !macro customCheckAppRunning
-  ; 初始化 $IsPowerShellAvailable，让 FIND_PROCESS 走「按路径前缀匹配」的实现，
-  ; 避免误判其它位置上同名的 OAS Studio.exe。
+  ; 初始化 $IsPowerShellAvailable（FIND_PROCESS/KILL_PROCESS 依赖它；
+  ; 本宏替换了默认实现，必须自己初始化一次，否则变量为空）
   !insertmacro IS_POWERSHELL_AVAILABLE
 
   DetailPrint "OAS: 检查上次的实例是否已完全退出…"
   StrCpy $R1 0
 
   oas_wait_loop:
-    !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
+    !insertmacro oas_detect
     ${if} $R0 != 0
       Goto oas_wait_done
     ${endIf}
 
-    ; 第 3 次（约 1.5 秒）和第 12 次（约 6 秒）各强杀一次。
-    ; 先别急着动手：窗口关掉后大多数进程会自己走完。
-    ${if} $R1 == 3
-    ${orIf} $R1 == 12
-      DetailPrint "OAS: 仍有进程未退出，强制结束…"
-      ${if} $IsPowerShellAvailable == 0
-        nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -C "Get-CimInstance Win32_Process | ? { $$_.Path -and $$_.Path.StartsWith('$INSTDIR','CurrentCultureIgnoreCase') } | % { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"`
-      ${else}
-        nsExec::Exec `taskkill /IM "${APP_EXECUTABLE_FILENAME}" /F`
-      ${endIf}
-      Pop $R0
-      Sleep 500
+    ; 第 2 秒起每轮先强杀，再等 500ms。前 2 秒不动手，给正常退出留时间。
+    ${if} $R1 >= 4
+      DetailPrint "OAS: 仍有残留进程，强制结束（第 $R1 次检查）…"
+      !insertmacro oas_kill
     ${endIf}
 
-    ; 等满 25 秒（50 × 500ms）还不退，才打扰用户。
-    ${if} $R1 >= 50
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY oas_wait_reset
-      Quit
-      oas_wait_reset:
-      StrCpy $R1 0
+    ; 45 秒（90 × 500ms）还不行就放弃等待，直接装——真被锁住时 NSIS 会明确
+    ; 报「写入文件失败」，比无限弹框好。
+    ${if} $R1 >= 90
+      DetailPrint "OAS: 等待超时，继续安装（如有锁文件会提示写入失败）。"
+      Goto oas_wait_done
     ${endIf}
 
     IntOp $R1 $R1 + 1
