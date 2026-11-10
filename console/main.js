@@ -593,18 +593,41 @@ if (singleInstance) {
   });
 }
 
-// 退出：先回收进程树，再让 Electron 正常退出；若 1.5 秒内没退掉（桥接卡住、
-// 渲染进程无响应等），直接 app.exit(0) 硬结束——宁可少一次优雅收尾，
-// 也不能留一个僵尸进程挡住下一次安装。
+// 退出：先回收桥接，再让 Electron 正常退出。
+//
+// 但「正常退出」经常不够干净：Electron 的 GPU / 渲染 / Utility 进程也全是
+// OAS Studio.exe，主进程退出时它们可能卡在 D3D 收尾上十几秒；安装器是按
+// 「exe 路径以安装目录开头」判断程序是否在运行的，于是重装就弹「无法关闭」。
+// 所以这里加两级兜底：1.2 秒还没退干净 → 把同目录的兄弟进程收掉；
+// 2.2 秒还在 → 直接 app.exit()。
+function sweepSiblings() {
+  if (process.platform !== 'win32') return;
+  try {
+    const exe = process.execPath.replace(/'/g, "''");
+    const script =
+      `Get-CimInstance Win32_Process | Where-Object { $_.Path -eq '${exe}' ` +
+      `-and $_.ProcessId -ne ${process.pid} } | ` +
+      'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }';
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], {
+      windowsHide: true,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+  } catch { /* 尽力而为 */ }
+}
+
 let quitting = false;
 function beginQuit() {
   if (quitting) return;
   quitting = true;
   stopBridge();
-  const hardExit = setTimeout(() => {
+  const sweep = setTimeout(sweepSiblings, 1200);
+  const hard = setTimeout(() => {
     try { app.exit(0); } catch { process.exit(0); }
-  }, 1500);
-  hardExit.unref?.();
+  }, 2200);
+  sweep.unref?.();
+  hard.unref?.();
   app.quit();
 }
 
