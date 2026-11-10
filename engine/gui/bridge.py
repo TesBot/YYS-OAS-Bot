@@ -183,8 +183,10 @@ def _adb_devices() -> list[str]:
         return []
 
 
-# MuMu 多开的 adb 端口：实例 0 从 16384 起，每个实例 +32
-_MUMU_ADB_PORTS = [16384 + 32 * i for i in range(8)]
+# MuMu 多开的 adb 端口：实例 0 从 16384 起，每个实例 +32。
+# 引擎侧实例编号推算（handle.py）支持到 32 个，这里保守探测前 16 个；
+# 并发 connect，不在线的端口不拖慢刷新。
+_MUMU_ADB_PORTS = [16384 + 32 * i for i in range(16)]
 
 
 def _adb_reconnect_known(existing: set[str] | None = None) -> None:
@@ -223,7 +225,7 @@ def _adb_reconnect_known(existing: set[str] | None = None) -> None:
         except Exception:  # noqa: BLE001 - 单个地址连不上不影响其它
             pass
 
-    with ThreadPoolExecutor(max_workers=min(8, len(serials))) as pool:
+    with ThreadPoolExecutor(max_workers=min(16, len(serials))) as pool:
         list(pool.map(_connect_one, sorted(serials)))
 
 
