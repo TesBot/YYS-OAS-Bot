@@ -314,7 +314,8 @@ function extractRuntime(zipPath) {
   const tmp = path.join(parent, '.python-extract-tmp');
   const tarExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
   fs.rmSync(tmp, { recursive: true, force: true });
-  fs.mkdirSync(parent, { recursive: true });
+  // bsdtar 的 -C 要求目标目录已存在（不会自建）
+  fs.mkdirSync(tmp, { recursive: true });
   const r = spawnSync(tarExe, ['-xf', zipPath, '-C', tmp], { encoding: 'utf8', windowsHide: true });
   if (r.status !== 0) {
     fs.rmSync(tmp, { recursive: true, force: true });
