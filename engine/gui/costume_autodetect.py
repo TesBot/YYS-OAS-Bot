@@ -48,6 +48,10 @@ from module.logger import logger
 MARGIN = 0.03
 # 达到该分数直接采信（避免相似皮肤撞车，如 main16 狐栖归处 / main17 玉岚狐庭）
 HIGH_CONFIDENCE = 0.975
+# 星座校验：功能锚点计入一致的最低分、平移容差(px)、确认所需的不同锚点数
+ANCHOR_MIN_SCORE = 0.55
+ANCHOR_TOLERANCE = 24
+ANCHOR_CONFIRM_COUNT = 2
 # 模板灰度缓存：(id(asset), scale) -> 灰度数组
 _TPL_CACHE: dict = {}
 # 缓存有效期（秒）；OAS_COSTUME_TTL=0 表示每次都重新比对
@@ -130,8 +134,14 @@ def drop_state(config_name: str) -> None:
 
 
 # --------------------------------------------------------------------------- 识别
-def _candidates() -> List[Tuple[object, List[object]]]:
-    """构建 (MainType, [RuleImage, ...]) 候选表，只构建一次。"""
+def _candidates() -> List[Tuple[object, List[object], List[object]]]:
+    """构建候选表，只构建一次。
+
+    Returns:
+        [(main_type, check_assets, other_assets), ...]
+        check_assets: 该皮肤的 CHECK_MAIN 模板（判断"在不在庭院"）；
+        other_assets: 探索/召唤/町中/宠物屋等功能锚点（做结构一致性校验）。
+    """
     global _CANDIDATES
     if _CANDIDATES is not None:
         return _CANDIDATES
@@ -141,18 +151,28 @@ def _candidates() -> List[Tuple[object, List[object]]]:
     from tasks.Component.Costume.costume_base import main_costume_model
     from tasks.GameUi.assets import GameUiAssets
 
-    candidates: List[Tuple[object, List[object]]] = []
-    for main_type, mapping in main_costume_model.items():
-        names = mapping.get("I_CHECK_MAIN")
-        if names is None:
-            continue
+    def _pick(names) -> List[object]:
         names = names if isinstance(names, list) else [names]
-        assets = [getattr(CostumeAssets, name) for name in names if hasattr(CostumeAssets, name)]
-        if assets:
-            candidates.append((main_type, assets))
+        return [getattr(CostumeAssets, name) for name in names if hasattr(CostumeAssets, name)]
+
+    candidates: List[Tuple[object, List[object], List[object]]] = []
+    for main_type, mapping in main_costume_model.items():
+        check = _pick(mapping.get("I_CHECK_MAIN") or [])
+        others: List[object] = []
+        for key, value in mapping.items():
+            if key == "I_CHECK_MAIN":
+                continue
+            others.extend(_pick(value))
+        if check:
+            candidates.append((main_type, check, others))
 
     # 默认庭院（初语谧景）不在 main_costume_model 里，走 GameUi 的资产
-    candidates.append((MainType.COSTUME_MAIN, [GameUiAssets.I_CHECK_MAIN]))
+    default_others = [
+        getattr(GameUiAssets, name) for name in
+        ("I_MAIN_GOTO_EXPLORATION", "I_MAIN_GOTO_SUMMON", "I_MAIN_GOTO_TOWN")
+        if hasattr(GameUiAssets, name)
+    ]
+    candidates.append((MainType.COSTUME_MAIN, [GameUiAssets.I_CHECK_MAIN], default_others))
     _CANDIDATES = candidates
     return _CANDIDATES
 
@@ -183,106 +203,98 @@ def _gray_template(asset, scale: float):
     return gray
 
 
-def _coarse(image):
-    """粗筛：灰度半分辨率全图搜索。
+def _coarse_one(small, asset, scale: float) -> Tuple[float, Tuple[int, int]]:
+    """单个锚点的灰度半分辨率全图搜索，返回 (score, 原图尺度坐标)。
 
-    返回 [(score, main_type, [(asset, (x, y)), ...]), ...] 降序，
-    坐标已换算回原图尺度，供后续局部复核定位。
-
-    为什么用全图而不是固定 ROI：庭院是可拖动的场景，取景位置会变；
+    用全图而不是固定 ROI：庭院是可拖动的场景，取景位置会变（实测漂移 26px+），
     上游模板注册的 roi_back 是采集时的位置，换个位置就 miss。
+    用灰度均值而不是彩色：对 RGB/BGR 通道顺序不敏感（截图顺序随截图方式而变）。
+    """
+    template = _gray_template(asset, scale)
+    if template is None or template.shape[0] > small.shape[0] or template.shape[1] > small.shape[1]:
+        return 0.0, (0, 0)
+    res = cv2.matchTemplate(small, template, cv2.TM_CCOEFF_NORMED)
+    _, score, _, loc = cv2.minMaxLoc(res)
+    return float(score), (int(loc[0] / scale), int(loc[1] / scale))
+
+
+def detect(image) -> Tuple[Optional[object], List[Tuple[float, float, object]]]:
+    """识别当前庭院皮肤。
+
+    庭院画面会动态变化（昼夜/活动装饰/角色走动/取景平移），单张模板打分
+    区分不了相似皮肤（实测 main16 狐栖归处与 main17 玉岚狐庭互为 0.93），
+    所以用两轮策略：
+
+    1. 粗筛：各皮肤 CHECK_MAIN 做灰度半分辨率全图搜索，取前 4 名；
+    2. 星座校验：入选皮肤的全部功能锚点（探索/召唤/町中/宠物屋）也做全图
+       搜索，比较每个锚点相对其注册位置的整体平移量——同一套皮肤的所有
+       锚点平移量必须一致（场景整体平移），相似皮肤做不到。
+
+    判定：不同锚点一致数 >= ANCHOR_CONFIRM_COUNT 直接采信；否则要求
+    CHECK_MAIN 高分直通（>= HIGH_CONFIDENCE）；都不满足保持原配置。
+
+    Returns:
+        (命中的 MainType 或 None, [(cm_score, threshold, main_type), ...] 降序)
     """
     gray = _gray(image)
     height, width = gray.shape[:2]
     scale = 0.5 if width >= 800 else 1.0
     small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale != 1.0 else gray
 
-    results = []
-    for main_type, assets in _candidates():
-        best, hits = 0.0, []
-        for asset in assets:
-            template = _gray_template(asset, scale)
-            if template is None or template.shape[0] > small.shape[0] or template.shape[1] > small.shape[1]:
-                continue
-            res = cv2.matchTemplate(small, template, cv2.TM_CCOEFF_NORMED)
-            score = float(res.max())
-            _, _, _, loc = cv2.minMaxLoc(res)
-            if score >= best:
-                best = score
-            hits.append((asset, (int(loc[0] / scale), int(loc[1] / scale)), score))
-        results.append((best, main_type, hits))
-    results.sort(key=lambda item: item[0], reverse=True)
-    return results
-
-
-def _verify(image, asset, center, pad: int = 48) -> float:
-    """在粗筛命中的位置附近，用**彩色原分辨率**复核，兼容两种通道顺序。
-
-    局部复核而不是全图彩色匹配：全图彩色匹配单次就要上百毫秒，
-    18 套皮肤跑一遍要 5 秒；裁一小块后单次只要十几毫秒。
-    """
-    try:
-        template = asset.image
-    except Exception:
-        return 0.0
-    if template is None or template.size == 0:
-        return 0.0
-    x, y = center
-    x0 = max(0, x - pad)
-    y0 = max(0, y - pad)
-    x1 = min(image.shape[1], x + template.shape[1] + pad)
-    y1 = min(image.shape[0], y + template.shape[0] + pad)
-    roi = image[y0:y1, x0:x1]
-    if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
-        return 0.0
-    best = 0.0
-    for frame in (roi, roi[:, :, ::-1]):
-        for tpl in (template, template[:, :, ::-1]):
-            best = max(best, float(cv2.matchTemplate(frame, tpl, cv2.TM_CCOEFF_NORMED).max()))
-    return best
-
-
-def detect(image) -> Tuple[Optional[object], List[Tuple[float, float, object]]]:
-    """识别当前庭院皮肤。
-
-    Returns:
-        (命中的 MainType 或 None, [(score, threshold, main_type), ...] 降序)
-    """
-    coarse = _coarse(image)
-    if not coarse:
+    # 第一轮：CHECK_MAIN 粗筛
+    first: List[Tuple[float, object, object, Tuple[int, int], List[object]]] = []
+    for main_type, check_assets, other_assets in _candidates():
+        best_score, best_asset, best_loc = 0.0, None, (0, 0)
+        for asset in check_assets:
+            score, loc = _coarse_one(small, asset, scale)
+            if score > best_score:
+                best_score, best_asset, best_loc = score, asset, loc
+        if best_asset is not None:
+            first.append((best_score, main_type, best_asset, best_loc, other_assets))
+    first.sort(key=lambda item: item[0], reverse=True)
+    if not first:
         return None, []
 
-    # 只复核粗筛前几名，既省时间也不影响结论（前几名以外不可能达标）
-    scored: List[Tuple[float, float, object]] = []
-    for _, main_type, hits in coarse[:4]:
-        best, threshold, center_asset = 0.0, 0.0, None
-        for asset, center, _score in hits:
-            score = _verify(image, asset, center)
-            if score > best:
-                best, center_asset = score, asset
-            threshold = max(threshold, float(getattr(asset, "threshold", 0.8)))
-        scored.append((best, threshold, main_type))
-    scored.sort(key=lambda item: item[0], reverse=True)
+    # 第二轮：星座校验（只做前 4 名，控制耗时）
+    scored: List[Tuple[float, float, object, int, object, Tuple[int, int]]] = []
+    for cm_score, main_type, cm_asset, cm_loc, other_assets in first[:4]:
+        dx0 = cm_loc[0] - cm_asset.roi_front[0]
+        dy0 = cm_loc[1] - cm_asset.roi_front[1]
+        # 同一锚点的多个变体（如 main17 的 A/B/C）按注册位置分组，各取最高分
+        groups: dict = {}
+        for asset in other_assets:
+            score, loc = _coarse_one(small, asset, scale)
+            if score < ANCHOR_MIN_SCORE:
+                continue
+            key = (asset.roi_front[0], asset.roi_front[1])
+            if key not in groups or score > groups[key][0]:
+                groups[key] = (score, loc)
+        consistent = 0
+        for (front_x, front_y), (_, loc) in groups.items():
+            if abs((loc[0] - front_x) - dx0) <= ANCHOR_TOLERANCE and \
+               abs((loc[1] - front_y) - dy0) <= ANCHOR_TOLERANCE:
+                consistent += 1
+        threshold = float(getattr(cm_asset, "threshold", 0.8))
+        scored.append((cm_score, threshold, main_type, consistent, cm_asset, cm_loc))
 
-    passing = [item for item in scored if item[0] >= item[1]]
-    if not passing:
-        top = "、".join(f"{getattr(mt, 'value', mt)}={sc:.3f}" for sc, _, mt in scored[:3])
-        logger.info(f"[Costume] 没有皮肤达到阈值，最高分：{top}")
-        return None, scored
+    # 一致锚点数优先，其次 CHECK 分数
+    scored.sort(key=lambda item: (item[3], item[0]), reverse=True)
+    report = [(item[0], item[1], item[2]) for item in scored]
+    best = scored[0]
 
-    best = passing[0]
-    # 高分直通：模板通常裁自同一套皮肤的实机画面，真身一般 ≥0.98；
-    # 相似皮肤（如 16 狐栖归处 / 17 玉岚狐庭 都是狐主题）能到 0.95 左右，
-    # 这种情况按分差判断会和真身撞车，所以高分时直接采信。
+    if best[3] >= ANCHOR_CONFIRM_COUNT:
+        return best[2], report
     if best[0] >= HIGH_CONFIDENCE:
-        return best[2], scored
-    if len(passing) > 1 and best[0] - passing[1][0] < MARGIN:
-        logger.warning(
-            f"[Costume] 庭院皮肤识别不唯一: {passing[0][2]}={passing[0][0]:.3f} / "
-            f"{passing[1][2]}={passing[1][0]:.3f}，保持原配置"
+        logger.info(
+            f"[Costume] 锚点一致性不足({best[3]})，但 CHECK 分数 {best[0]:.3f} 达到直通线"
         )
-        return None, scored
-    return best[2], scored
+        return best[2], report
+
+    top = "、".join(
+        f"{getattr(mt, 'value', mt)}={sc:.3f}(锚点{cn})" for sc, _, mt, cn, _, _ in scored[:3]
+    )
+    logger.info(f"[Costume] 无法确认庭院皮肤，保持原配置。候选：{top}")
+    return None, report
 
 
 def _value(main_type) -> str:
