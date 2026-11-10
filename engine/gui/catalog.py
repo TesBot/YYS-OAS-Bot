@@ -99,13 +99,9 @@ TASK_META: dict[str, tuple[str, str, str, bool]] = {
     # 逢魔之时
     "demon_encounter": ("逢魔之时", "逢魔之时", "每日 20:00 后的逢魔鬼王（鬼灵歌姬/蜃气楼/土蜘蛛等）。", False),
     "area_boss": ("地域鬼王", "逢魔之时", "地域鬼王挑战，按单只/多只配置；已挑战过会被跳过。", False),
-    "lbs": ("LBS 鬼王", "逢魔之时", "LBS 定位鬼王，支持单人/组队匹配/开车模式。", False),
 
     # 斗技对弈
     "duel": ("斗技", "斗技对弈", "斗技 PVP，按段位自动匹配。", False),
-    "draft_duel": ("协同对弈", "斗技对弈", "每周协同对弈任务，需选人与队友配合。", False),
-    "chess": ("百鬼棋局", "斗技对弈", "百鬼棋局自走棋玩法，可配置羁绊与局数。", False),
-    "martial_arts": ("武道大会", "斗技对弈", "武道大会爬塔式 PVP。", False),
 
     # 结界
     "realm_raid": ("结界突破", "结界、阴阳寮", "个人结界突破，按勋章与失败策略自动打。", False),
@@ -122,12 +118,9 @@ TASK_META: dict[str, tuple[str, str, str, bool]] = {
     "guild_activity_monitor": ("寮活动监控", "结界、阴阳寮", "监控寮活动开启状态，用于编排前置判断。", False),
 
     # 活动
-    "moment_activity": ("版本活动", "活动", "当前版本主题活动的主线任务。", False),
     "activity_shikigami": ("式神活动", "活动", "式神主题活动（探索/大富翁两条线）。", False),
-    "moonlight": ("月华流光", "活动", "限时活动·月华流光，按次数挑战。", False),
     "hero_test": ("式神试炼", "活动", "鬼兵演武 / 兵藏秘境 / 传承试炼三选一。", False),
     "dye_trials": ("染色试炼", "活动", "染色试炼活动关卡。", False),
-    "gugu_art_studio": ("姑姑艺术工坊", "活动", "姑姑艺术工坊活动战斗关卡。", False),
     "bondling_fairyland": ("契灵之境", "御魂、契灵", "契灵之境：探查与契灵（低级/中级式盘），支持双人。", True),
     "float_parade": ("花车巡游", "活动", "花车巡游玩法，可选奖励偏向。", False),
     "abyss_shadows": ("深渊暗影", "活动", "暗域玩法（神龙暗域等），按区域推进。", False),
@@ -138,7 +131,6 @@ TASK_META: dict[str, tuple[str, str, str, bool]] = {
     # 商店
     "kitty_shop": ("喵喵商店", "商店", "喵喵商店兑换。", False),
     "mystery_shop": ("神秘商店", "商店", "神秘商店购买（可邀请好友刷新）。", False),
-    "weekly_purchase": ("每周采购", "商店", "每周商店采购：勋章/荣誉/友点等货币兑换。", False),
 
     # 其他
     "hyakkiyakou": ("百鬼夜行", "其他", "撒豆玩法，可切换阴阳师与豆子数量。", False),
@@ -405,7 +397,7 @@ SECTION_LABELS: dict[str, str] = {
     "version_ruins_battle_conf": "活动·遗迹战斗设置", "version_trial_battle_conf": "活动·试炼战斗设置",
     "rich_man_battle_conf": "活动·大富翁战斗设置", "pass_battle_conf": "活动·关卡战斗设置",
     "fakegod_battle_conf": "超鬼王战斗设置", "exp_encounter_battle_conf": "式神活动战斗设置",
-    "moonlight_battle_conf": "月华流光战斗设置", "battle_config": "战斗设置",
+    "battle_config": "战斗设置",
     "ap_battle_conf": "体力本战斗设置", "boss_battle_conf": "鬼王战斗设置",
     "quiz_config": "答题设置", "hyakkiyakou_config": "百鬼夜行设置",
     "kitty_shop_config": "喵喵商店设置", "frog_boss_config": "呱太来袭设置",
@@ -414,7 +406,7 @@ SECTION_LABELS: dict[str, str] = {
     "memory_scrolls_config": "追忆绘卷设置", "exploration_config": "探索设置",
     "sougenbi_config": "业原火设置", "true_orochi_config": "真蛇设置",
     "duel_config": "斗技设置", "orochi_config": "八岐大蛇设置", "evo_zone_config": "觉醒设置",
-    "moment_activity_config": "版本活动设置", "mystery_shop_config": "神秘商店设置",
+    "mystery_shop_config": "神秘商店设置",
     "guild_donate": "寮捐赠",
     "eternity_sea_config": "永生之海设置", "fallen_sun_config": "日轮之陨设置",
     "hunt_config": "狩猎战设置", "nian_config": "年兽设置", "pets_config": "宠物设置",
@@ -655,12 +647,11 @@ FLOW_TEMPLATES: list[dict] = [
     {
         "id": "evening-boss",
         "name": "晚间鬼王",
-        "desc": "逢魔之时 + 地域鬼王 3 只 + LBS 鬼王，20:00 之后执行。",
+        "desc": "逢魔之时 + 地域鬼王 3 只，20:00 之后执行。",
         "accounts": 1,
         "steps": [
             {"task": "demon_encounter"},
             {"task": "area_boss", "patch": {"boss": {"boss_number": 3, "boss_reward": False}}},
-            {"task": "lbs"},
         ],
     },
 ]
