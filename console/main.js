@@ -250,7 +250,14 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
+function protoLog(msg) {
+  try {
+    fs.appendFileSync(path.join(app.getPath('temp'), 'oas-proto.log'), `${new Date().toISOString()} ${msg}\n`);
+  } catch { /* ignore */ }
+}
+
 function registerAppProtocol() {
+  protoLog('registerAppProtocol: app 协议已注册');
   protocol.handle('app', async (request) => {
     const url = new URL(request.url);
 
@@ -284,7 +291,8 @@ function registerAppProtocol() {
     try {
       const data = await fs.promises.readFile(file);
       return new Response(data, { headers: { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' } });
-    } catch {
+    } catch (err) {
+      protoLog(`STATIC-ERR ${file} :: ${err && err.message}`);
       return new Response('Not Found', { status: 404 });
     }
   });
@@ -529,7 +537,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
-  if (!singleInstance) return; // 已有实例在跑，本进程立刻退出  registerAppProtocol();
+  if (!singleInstance) return; // 已有实例在跑，本进程立刻退出
+  registerAppProtocol();
   buildMenu();
 
   // 老版本运行时在安装目录内，升级后先搬到用户目录再判断
