@@ -187,14 +187,23 @@ def _adb_devices() -> list[str]:
 _MUMU_ADB_PORTS = [16384 + 32 * i for i in range(8)]
 
 
-def _adb_reconnect_known() -> None:
-    """设备列表为空时主动重连已知的模拟器地址。
+def _adb_reconnect_known(existing: set[str] | None = None) -> None:
+    """主动重连已知的模拟器地址。
 
     MuMu 重启后 adb 连接会掉（`adb devices` 为空），只列在线设备的
     「刷新」就永远扫不到。这里对已绑定实例的 serial 与 MuMu 常用端口
     做一次 `adb connect`，把掉线的模拟器拉回列表。
+
+    注意两点：
+    - MuMu 端口兜底不能只在「没有任何实例」时做——用户常常在已绑定 1 个
+      实例之后又新开第 2、3 个实例，那些端口的设备同样需要 connect 才会
+      出现在列表里。
+    - 连不上的地址 adb 要等约 2s 才返回，8 个端口串行就是十几秒。所以并发
+      发起，并且跳过已经在线（``existing``）的地址。
     """
-    serials = set()
+    from concurrent.futures import ThreadPoolExecutor
+
+    serials = set(f"127.0.0.1:{p}" for p in _MUMU_ADB_PORTS)
     for path in _instance_files():
         try:
             serial = (_load(path).get("script") or {}).get("device", {}).get("serial")
@@ -202,14 +211,20 @@ def _adb_reconnect_known() -> None:
                 serials.add(serial)
         except Exception:  # noqa: BLE001
             continue
+    if existing:
+        serials -= set(existing)
     if not serials:
-        serials.update(f"127.0.0.1:{p}" for p in _MUMU_ADB_PORTS)
-    for serial in sorted(serials):
+        return
+
+    def _connect_one(serial: str) -> None:
         try:
             subprocess.run([str(ADB), "connect", serial],
-                           capture_output=True, timeout=8)
+                           capture_output=True, timeout=6)
         except Exception:  # noqa: BLE001 - 单个地址连不上不影响其它
-            continue
+            pass
+
+    with ThreadPoolExecutor(max_workers=min(8, len(serials))) as pool:
+        list(pool.map(_connect_one, sorted(serials)))
 
 
 def _task_entries(cfg: dict) -> list[dict]:
@@ -306,19 +321,10 @@ def get_catalog():
     }
 
 
-@app.get("/api/devices")
-def list_devices():
-    """实时扫描 adb 在线设备，供「账号绑定」选择。
-
-    模拟器重启后 adb 连接常常是掉的（devices 为空），此时先按已知
-    serial / MuMu 常用端口主动 connect 一次再扫。
-    """
-    devices = _adb_devices()
-    if not devices:
-        _adb_reconnect_known()
-        devices = _adb_devices()
+def _device_detail(serials: list[str]) -> list[dict]:
+    """把 serial 列表补全为带型号/分辨率、且标注已绑定实例的设备详情。"""
     detail = []
-    for serial in devices:
+    for serial in serials:
         item = {"serial": serial, "model": None, "resolution": None, "density": None}
         try:
             out = subprocess.run([str(ADB), "-s", serial, "shell", "wm", "size"],
@@ -341,6 +347,26 @@ def list_devices():
             bound[serial] = path.stem
     for item in detail:
         item["bound_to"] = bound.get(item["serial"])
+    return detail
+
+
+@app.get("/api/devices")
+def list_devices(probe: bool = False):
+    """实时扫描 adb 在线设备，供「账号绑定」选择。
+
+    模拟器重启后 adb 连接常常是掉的（devices 为空），此时先按已知
+    serial / MuMu 常用端口主动 connect 一次再扫。
+
+    ``probe=1``：不论当前列表是否为空，都先做一轮主动 connect。用户点了
+    「刷新设备」就传这个，因为新开的 MuMu 实例不会自动注册到 adb server。
+    """
+    if probe:
+        _adb_reconnect_known(set(_adb_devices()))
+    devices = _adb_devices()
+    if not devices:
+        _adb_reconnect_known()
+        devices = _adb_devices()
+    detail = _device_detail(devices)
     return {"devices": detail, "count": len(detail)}
 
 
@@ -353,7 +379,9 @@ def connect_device(payload: dict = Body(...)):
         out = subprocess.run([str(ADB), "connect", serial], capture_output=True, text=True, timeout=12)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"adb connect 失败: {exc}") from exc
-    return {"ok": True, "output": out.stdout.strip(), "devices": _adb_devices()}
+    text = (out.stdout or "").strip() or (out.stderr or "").strip()
+    ok = "connected to" in text
+    return {"ok": ok, "output": text, "devices": _device_detail(_adb_devices())}
 
 
 # ────────────────────────── 账号档案（GUI 侧元数据） ──────────────────────────

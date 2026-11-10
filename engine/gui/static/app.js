@@ -188,9 +188,11 @@
 
   async function loadDevices(notify) {
     try {
-      const data = await api('/api/devices');
+      // 用户点「刷新设备」时带上 probe，让 bridge 主动 connect 一遍已知端口
+      // （新开的模拟器实例不会自己注册到 adb server）。
+      const data = await api('/api/devices' + (notify ? '?probe=1' : ''));
       state.devices = data.devices || [];
-      if (notify) toast(`扫描完成，在线设备 ${state.devices.length} 台`, 'ok');
+      if (notify) toast(`扫描完成，在线设备 ${state.devices.length} 台`, state.devices.length ? 'ok' : 'err');
     } catch (e) { if (notify) toast('扫描失败：' + e.message, 'err'); }
     if (state.view === 'overview') render();
   }
@@ -259,7 +261,7 @@
     } else if (!state.devices.length) {
       root.appendChild(el('p', {
         class: 'small muted mt-20',
-        text: 'adb 没有扫描到在线设备；模拟器刚启动时点右上角「刷新设备」。',
+        text: 'adb 没有扫描到在线设备。点「绑定新账号」可手动填写 adb 地址（本机 MuMu 常用 127.0.0.1:16384，多开依次 +32）直接连接；模拟器刚启动时也可以先点「刷新设备」。',
       }));
     }
   }
@@ -383,16 +385,48 @@
     const nickInput = el('input', { class: 'input', placeholder: '游戏内昵称，如 晴明' });
     const serverInput = el('input', { class: 'input', placeholder: '区服，如 形影不离 / S12' });
     const roleInput = el('input', { class: 'input', placeholder: '角色 ID（可留空）' });
-    const deviceSel = el('select', { class: 'select' });
-    (devices.length ? devices : [{ serial: serial || '', model: '', resolution: '' }]).forEach((d) => {
-      deviceSel.appendChild(el('option', { value: d.serial, text: `${d.serial} ${d.model ? '· ' + d.model : ''} ${d.resolution ? '· ' + d.resolution : ''}` }));
-    });
-    if (serial) deviceSel.value = serial;
     const primary = el('input', { type: 'checkbox' });
+
+    // adb 地址必须可手填：跨机、以及新开的模拟器实例，adb 都不会自动出现在扫描结果里。
+    const listId = 'adb-serial-list';
+    const serialInput = el('input', {
+      class: 'input',
+      list: listId,
+      placeholder: '127.0.0.1:16384（本机）或 192.168.1.50:16384（局域网）',
+      value: serial || (devices.length ? devices[0].serial : ''),
+    });
+    const datalist = el('datalist', { id: listId });
+    const fillList = (list) => {
+      datalist.innerHTML = '';
+      list.forEach((d) => datalist.appendChild(el('option', {
+        value: d.serial,
+        text: `${d.serial}${d.model ? ' · ' + d.model : ''}${d.resolution ? ' · ' + d.resolution : ''}`,
+      })));
+    };
+    fillList(state.devices);
+
+    const connectBtn = btn('连接', 'bolt', async () => {
+      const value = serialInput.value.trim();
+      if (!value) return toast('请先填写 adb 地址', 'err');
+      connectBtn.disabled = true;
+      try {
+        const data = await api('/api/devices/connect', { method: 'POST', body: { serial: value } });
+        state.devices = data.devices || state.devices;
+        fillList(state.devices);
+        if (data.ok) toast(`已连接 ${value}`, 'ok');
+        else toast('连接失败：' + (data.output || '地址不可达'), 'err');
+        if (state.view === 'overview') render();
+      } catch (e) {
+        toast('连接失败：' + e.message, 'err');
+      } finally { connectBtn.disabled = false; }
+    }, 'ghost');
 
     body.append(
       field('实例名（配置文件名）', nameInput, '英文短名，用于 config/<name>.json，也是编排表里的账号标识。'),
-      field('adb 地址', deviceSel, devices.length ? '' : '当前没有扫描到设备，可直接填写 127.0.0.1:16416 后手动连接。'),
+      field('adb 地址', el('div', { class: 'row' }, serialInput, connectBtn),
+        devices.length
+          ? '从下拉里选一台已扫描到的模拟器，或直接填写端口/局域网地址后点「连接」。'
+          : '没有扫描到模拟器？填写 adb 地址（MuMu 12 单开是 127.0.0.1:16384，多开依次 +32）后点「连接」。'),
       el('div', { class: 'form-grid' },
         field('游戏昵称', nickInput),
         field('区服', serverInput),
@@ -413,10 +447,18 @@
         btn('取消', 'x', closeDrawer, 'ghost'),
         btn('创建并绑定', 'check', async () => {
           const name = nameInput.value.trim();
+          const serial = serialInput.value.trim();
           if (!/^[A-Za-z0-9_-]{2,32}$/.test(name)) return toast('实例名需为 2-32 位字母/数字/下划线', 'err');
-          if (!deviceSel.value) return toast('请选择或填写 adb 地址', 'err');
+          if (!serial) return toast('请选择或填写 adb 地址', 'err');
           try {
-            await api('/api/instances', { method: 'POST', body: { name, serial: deviceSel.value } });
+            // 手填的地址可能还没连上，先 connect 一次再把实例写进去，
+            // 否则后续任务会因为 serial 不可达直接失败。
+            if (!state.devices.some((d) => d.serial === serial)) {
+              const conn = await api('/api/devices/connect', { method: 'POST', body: { serial } });
+              if (!conn.ok) return toast('adb 连接失败：' + (conn.output || '地址不可达'), 'err');
+              state.devices = conn.devices || state.devices;
+            }
+            await api('/api/instances', { method: 'POST', body: { name, serial } });
             await api(`/api/profiles/${name}`, {
               method: 'PUT',
               body: { nickname: nickInput.value.trim() || name, server: serverInput.value.trim(), role_id: roleInput.value.trim(), primary: primary.checked },
