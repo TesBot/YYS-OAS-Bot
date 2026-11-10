@@ -17,9 +17,9 @@ const BRIDGE_PORT = 22390;
 const BRIDGE_URL = `http://127.0.0.1:${BRIDGE_PORT}`;
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 const MIN_ENGINE_VERSION = '1.0.0';
-const RUNTIME_VERSION = '1.0.0';
+const RUNTIME_VERSION = '1.0.1';
 // 运行时独立分发：首次使用时下载安装（向导里可改用镜像地址）
-const DEFAULT_RUNTIME_URL = 'https://github.com/TesBot/YYS-OAS-Bot/releases/download/runtime-v1.0.0/oas-python-runtime-1.0.0.zip';
+const DEFAULT_RUNTIME_URL = 'https://github.com/TesBot/YYS-OAS-Bot/releases/download/runtime-v1.0.1/oas-python-runtime-1.0.1.zip';
 
 let mainWindow = null;
 let wizardWindow = null;
