@@ -1,7 +1,7 @@
 {
   "name": "oas-studio",
   "productName": "OAS Studio",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "阴阳师自动化控制台 · 多实例管理与任务编排（引擎解耦版）",
   "main": "main.js",
   "author": "OAS Studio",
@@ -31,7 +31,16 @@
       {
         "from": "../engine",
         "to": "engine",
-        "filter": ["**/*", "!log/**", "!.cache/**", "!tests/**", "!__pycache__/**"]
+        "filter": [
+          "**/*",
+          "!log/**",
+          "!.cache/**",
+          "!tests/**",
+          "!__pycache__/**",
+          "!config/oas*.json",
+          "!config/gui_*.json",
+          "!config/deploy.yaml"
+        ]
       }
     ],
     "win": {
