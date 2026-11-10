@@ -571,88 +571,32 @@ FIELD_HINTS: list[tuple[str, str]] = [
 ]
 
 # ─────────────────────────── 已知问题 ───────────────────────────
+# 面向用户动作，不写内部实现细节；用户只需知道「出什么症状 → 做什么」。
 
 KNOWN_ISSUES: list[dict] = [
     {
         "id": "costume-main-type",
-        "severity": "error",
-        "title": "庭院皮肤未声明 → 所有导航失败",
-        "scope": "账号运维 / global_game.costume_config.costume_main_type",
-        "detail": "账号使用了非默认庭院皮肤，而配置只写了 costume_main 时，庭院→探索入口的模板匹配会失败"
-                  "（实测 0.355，阈值 0.8），任务卡在 page_main → page_exploration 反复重试。",
-        "fix": "在「账号绑定 → 庭院皮肤」里一键全选 19 个候选，引擎启动时会自动探测实际皮肤。",
-    },
-    {
-        "id": "multi-device-login",
-        "severity": "error",
-        "title": "账号在其它设备登录会把模拟器挤下线",
-        "scope": "所有任务",
-        "detail": "游戏检测到多端登录会弹「检测到账号在其他设备登录」，点确定后模拟器被踢回登录界面。",
-        "fix": "挂机期间不要在手机/平板上登录同一账号；双开时两个模拟器要登录不同账号。",
-    },
-    {
-        "id": "preset-soul-diff-popup",
         "severity": "warn",
-        "title": "应用预设后可能弹「御魂不一致」确认框",
-        "scope": "启用 preset_enable 的任务",
-        "detail": "预设保存的御魂与式神当前御魂不一致时游戏会弹确认框挡住「准备」，"
-                  "引擎素材在部分分辨率下匹配仅 0.756（阈值 0.8）会漏检。",
-        "fix": "本地已将 I_CONFIRM_CLOSE_DIFF_SOUL 阈值降到 0.7（弹窗 0.756 / 非弹窗 ≤0.223）。"
-               "也可在游戏里勾选「7 日内不再提示」。",
+        "title": "庭院皮肤设置",
+        "scope": "所有任务",
+        "detail": "如果任务无法正常执行、反复卡在同一界面或报错，通常是当前使用的庭院皮肤不被识别。",
+        "fix": "请在游戏内把庭院皮肤更换回初始（默认）庭院后再运行任务。",
     },
     {
         "id": "preset-team-5",
         "severity": "warn",
-        "title": "预设队伍只支持 1-4",
-        "scope": "御魂/觉醒等带 preset_team 的任务",
-        "detail": "配置校验允许 1-5，但引擎只定义了 4 个队伍按钮素材，选 5 会回退到第 1 队。",
-        "fix": "使用 1-4；需要更多阵容时改用御魂切换。",
-    },
-    {
-        "id": "team-duo-prereq",
-        "severity": "warn",
-        "title": "双账号联动的前置条件",
-        "scope": "编排表 · 双人步骤",
-        "detail": "队长建房邀请、队员接受邀请，要求两个账号互为好友/同寮，且队员端在邀请到达时处于庭院；"
-                  "两个模拟器同时运行会明显抬高 CPU 与内存占用。",
-        "fix": "先用「任务库 → 单次验证」分别跑通队长端与队员端，再放进编排表；"
-               "建议给每个模拟器限制帧率并关闭多余窗口。",
-    },
-    {
-        "id": "area-boss-settlement",
-        "severity": "info",
-        "title": "地域鬼王结算屏与通用胜利素材不匹配（已修复）",
-        "scope": "地域鬼王",
-        "detail": "鬼王团体战胜利屏是专属样式（金色扇面+小组排名），与 gb_win 互匹配仅 0.174；"
-                  "战斗期间识别不到 page_battle，60 秒短超时误触发 ESC 导致任务误报失败。",
-        "fix": "已新增 I_AB_BATTLE_WIN 模板并入结算页识别，并让未识别战斗维持 300 秒长守卫。实测通过。",
+        "title": "预设队伍",
+        "scope": "御魂/觉醒等使用队伍预设的任务",
+        "detail": "队伍预设目前仅支持第 1-4 队；选择第 5 队时会按第 1 队执行。",
+        "fix": "请在第 1-4 队范围内配置队伍预设。",
     },
     {
         "id": "battle-theme",
-        "severity": "info",
-        "title": "自定义战斗主题可能影响识别",
+        "severity": "warn",
+        "title": "战斗主题设置",
         "scope": "所有战斗任务",
-        "detail": "账号开启战斗主题（自定义战斗 UI）时，标准战斗胜负素材可能失配。"
-                  "当前账号未开启，实测正常。",
-        "fix": "若标准战斗频繁识别失败，先关闭战斗主题再试。",
-    },
-    {
-        "id": "adb-venv-layout",
-        "severity": "info",
-        "title": "adb 路径依赖运行布局",
-        "scope": "部署 / 环境",
-        "detail": "引擎按 `python.exe/../Lib/site-packages/adbutils/binaries/adb.exe` 推导 adb，"
-                  "只在发布包布局下成立。",
-        "fix": "本机已用 `.venv/Scripts/Lib` 目录联接修复；重装环境时需重建。",
-    },
-    {
-        "id": "team-flow-mqtt",
-        "severity": "info",
-        "title": "引擎内置联动总线（MQTT）默认关闭",
-        "scope": "高级设置 · global_game.team_flow",
-        "detail": "引擎自带基于 MQTT 的跨进程联动（发布策略/抢占任务），需要自备 broker。"
-                  "本 UI 的联动采用「双进程并行 + 角色注入」方式，不依赖 broker。",
-        "fix": "除非你有稳定的私有 broker，否则保持 team_flow.enable = false。",
+        "detail": "如果战斗结束后频繁识别不到胜负结算（任务卡在战斗阶段），通常是自定义战斗主题导致。",
+        "fix": "请在游戏内关闭自定义战斗主题、恢复默认后再试。",
     },
 ]
 

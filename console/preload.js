@@ -17,14 +17,8 @@ contextBridge.exposeInMainWorld('oasDesktop', {
     installFromZip: (zipPath) => ipcRenderer.invoke('install-runtime-zip', zipPath),
     onProgress: (cb) => ipcRenderer.on('runtime-progress', (_e, p) => cb(p)),
   },
-  // 引擎配置向导
+  // 引擎固定使用安装包内置目录，无需配置
   wizard: {
-    selectEngineDir: () => ipcRenderer.invoke('select-engine-dir'),
-    validateEngineDir: (dir) => ipcRenderer.invoke('validate-engine-dir', dir),
-    saveEnginePath: (dir) => ipcRenderer.invoke('save-engine-path', dir),
-    useBundledEngine: () => ipcRenderer.invoke('use-bundled-engine'),
-    getEngineInfo: () => ipcRenderer.invoke('get-engine-info'),
-    openExternal: (url) => ipcRenderer.invoke('open-external', url),
     done: () => ipcRenderer.send('wizard-done'),
   },
 });

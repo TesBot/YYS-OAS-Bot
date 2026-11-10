@@ -225,10 +225,10 @@ function registerAppProtocol() {
 
 const PRELOAD = path.join(__dirname, 'preload.js');
 const WINDOW_OPTS = {
-  width: 1460,
-  height: 940,
-  minWidth: 1120,
-  minHeight: 720,
+  width: 1280,
+  height: 820,
+  minWidth: 1024,
+  minHeight: 700,
   backgroundColor: '#f7f5f1',
   show: false,
   titleBarStyle: 'hidden',
@@ -261,8 +261,8 @@ function openWizard() {
     return;
   }
   wizardWindow = new BrowserWindow({
-    width: 780,
-    height: 720,
+    width: 480,
+    height: 430,
     resizable: false,
     maximizable: false,
     backgroundColor: '#f7f5f1',
@@ -307,28 +307,39 @@ function downloadToFile(url, dest, onProgress, redirects = 0) {
 }
 
 // 解压运行时 zip（顶层为 python/）到 runtimeDir()
-// 用 Win10+ 自带 bsdtar（System32，支持 zip）——PATH 里 GNU tar 不认 zip
+// 异步执行（spawn 而非 spawnSync）：635MB 解压期间主进程不阻塞，界面保持响应。
+// 用 Win10+ 自带 bsdtar（System32，支持 zip）——PATH 里 GNU tar 不认 zip。
 function extractRuntime(zipPath) {
-  const target = runtimeDir();
-  const parent = path.dirname(target);
-  const tmp = path.join(parent, '.python-extract-tmp');
-  const tarExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
-  fs.rmSync(tmp, { recursive: true, force: true });
-  // bsdtar 的 -C 要求目标目录已存在（不会自建）
-  fs.mkdirSync(tmp, { recursive: true });
-  const r = spawnSync(tarExe, ['-xf', zipPath, '-C', tmp], { encoding: 'utf8', windowsHide: true });
-  if (r.status !== 0) {
+  return new Promise((resolve, reject) => {
+    const target = runtimeDir();
+    const tmp = path.join(path.dirname(target), '.python-extract-tmp');
+    const tarExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
     fs.rmSync(tmp, { recursive: true, force: true });
-    throw new Error(`解压失败：${(r.stderr || r.stdout || '').slice(0, 300)}`);
-  }
-  const extracted = path.join(tmp, 'python');
-  if (!fs.existsSync(path.join(extracted, 'python.exe'))) {
-    fs.rmSync(tmp, { recursive: true, force: true });
-    throw new Error('zip 内容不正确：未找到 python/python.exe');
-  }
-  fs.rmSync(target, { recursive: true, force: true }); // 覆盖残缺旧运行时
-  fs.renameSync(extracted, target);
-  fs.rmSync(tmp, { recursive: true, force: true });
+    // bsdtar 的 -C 要求目标目录已存在（不会自建）
+    fs.mkdirSync(tmp, { recursive: true });
+    const child = spawn(tarExe, ['-xf', zipPath, '-C', tmp], { windowsHide: true });
+    child.on('error', (err) => {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      reject(err);
+    });
+    child.on('exit', (code) => {
+      if (code !== 0) {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        return reject(new Error(`解压失败（tar 退出码 ${code}）`));
+      }
+      const extracted = path.join(tmp, 'python');
+      if (!fs.existsSync(path.join(extracted, 'python.exe'))) {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        return reject(new Error('zip 内容不正确：未找到 python/python.exe'));
+      }
+      try {
+        fs.rmSync(target, { recursive: true, force: true }); // 覆盖残缺旧运行时
+        fs.renameSync(extracted, target);
+        fs.rmSync(tmp, { recursive: true, force: true });
+        resolve();
+      } catch (err) { reject(err); }
+    });
+  });
 }
 
 function wizardSend(channel, payload) {
@@ -338,32 +349,6 @@ function wizardSend(channel, payload) {
 }
 
 // ────────────────────────── IPC（向导） ──────────────────────────
-
-ipcMain.handle('select-engine-dir', async () => {
-  const r = await dialog.showOpenDialog(wizardWindow, { properties: ['openDirectory'] });
-  if (r.canceled || !r.filePaths.length) return null;
-  const dir = r.filePaths[0];
-  return { dir, checks: validateEngine(dir) };
-});
-
-ipcMain.handle('validate-engine-dir', (_e, dir) => validateEngine(dir));
-
-ipcMain.handle('save-engine-path', async (_e, dir) => {
-  const checks = validateEngine(dir);
-  if (!checks.bridge || !checks.python) return { ok: false, checks };
-  saveSettings({ enginePath: dir });
-  return { ok: true, checks };
-});
-
-ipcMain.handle('use-bundled-engine', () => {
-  saveSettings({ enginePath: '' });
-  return { dir: bundledEngineDir(), checks: validateEngine(bundledEngineDir()) };
-});
-
-ipcMain.handle('get-engine-info', () => {
-  const dir = activeEngineDir();
-  return { dir, bundled: !!bundledEngineDir() && dir === bundledEngineDir(), checks: dir ? validateEngine(dir) : null };
-});
 
 ipcMain.handle('runtime-status', () => Object.assign(runtimeStatus(), { defaultUrl: DEFAULT_RUNTIME_URL, version: runtimeStatus().version }));
 
@@ -376,7 +361,7 @@ ipcMain.handle('download-runtime', async (_e, url) => {
       wizardSend('runtime-progress', { phase: 'downloading', received, total });
     });
     wizardSend('runtime-progress', { phase: 'extracting' });
-    extractRuntime(zipPath);
+    await extractRuntime(zipPath);
     fs.rmSync(zipPath, { force: true });
     const st = runtimeStatus();
     wizardSend('runtime-progress', { phase: 'done' });
@@ -398,7 +383,7 @@ ipcMain.handle('install-runtime-zip', async (_e, zipPathArg) => {
     zipPath = r.filePaths[0];
   }
   try {
-    extractRuntime(zipPath);
+    await extractRuntime(zipPath);
     return { ok: true, status: runtimeStatus() };
   } catch (err) {
     return { ok: false, error: String(err && err.message || err) };
@@ -422,26 +407,14 @@ ipcMain.on('wizard-done', async () => {
   bridgeStarting = false;
 });
 
-// ────────────────────────── 菜单（可重新配置引擎） ──────────────────────────
+// ────────────────────────── 菜单 ──────────────────────────
 
 function buildMenu() {
   const template = [
     {
-      label: '引擎',
+      label: '文件',
       submenu: [
-        {
-          label: '使用外部引擎目录…',
-          click: () => openWizard(),
-        },
-        {
-          label: '恢复内置引擎',
-          enabled: app.isPackaged,
-          click: () => {
-            saveSettings({ enginePath: '' });
-            if (!mainWindow) createWindow();
-            else mainWindow.reload();
-          },
-        },
+        { label: '重新配置运行时…', click: () => openWizard() },
         { type: 'separator' },
         { label: '退出', role: 'quit' },
       ],
@@ -476,11 +449,11 @@ app.whenReady().then(async () => {
     const ok = await ensureBridge();
     if (!ok) {
       dialog.showErrorBox('桥接服务启动失败',
-        `无法从引擎目录启动 gui/bridge.py。\n引擎目录：${engineDir}\n可通过菜单「引擎 → 使用外部引擎目录…」重新配置。`);
+        `无法从引擎目录启动 gui/bridge.py。\n引擎目录：${engineDir}\n若反复失败，请重新安装 OAS Studio。`);
     }
     createWindow();
   } else {
-    // 内置引擎缺失且无有效覆盖 → 向导兜底
+    // 运行环境未装或内置引擎缺失 → 小窗引导
     openWizard();
   }
 
