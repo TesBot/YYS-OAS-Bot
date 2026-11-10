@@ -125,15 +125,24 @@
     }
   }
 
+  function mb(bytes) { return (bytes / 1048576).toFixed(0); }
+
   rt.onProgress((p) => {
     if (p.phase === 'downloading') {
-      const pct = p.total ? Math.round(p.received * 100 / p.total) : 0;
-      bar.hidden = false; bar.className = 'bar'; barFill.style.width = pct + '%';
-      setMsg('下载中 ' + pct + '%（' + (p.total ? (p.received / 1048576).toFixed(0) + ' / ' + (p.total / 1048576).toFixed(0) : (p.received / 1048576).toFixed(0)) + ' MB）');
+      if (p.total > 0) {
+        const pct = Math.min(100, Math.round(p.received * 100 / p.total));
+        bar.hidden = false; bar.className = 'bar'; barFill.style.width = pct + '%';
+        setMsg('下载中 ' + pct + '%（' + mb(p.received) + ' / ' + mb(p.total) + ' MB）');
+      } else {
+        // 服务端没给 content-length（分块传输）：不编百分比，只报真实已下载量
+        bar.hidden = false; bar.className = 'bar indeterminate'; barFill.style.width = '100%';
+        setMsg('下载中…已接收 ' + mb(p.received) + ' MB');
+      }
     } else if (p.phase === 'extracting') {
       bar.hidden = false; bar.className = 'bar indeterminate'; barFill.style.width = '100%';
       hint.hidden = false;
-      setMsg('下载完成，正在解压…');
+      const sec = p.elapsed || 0;
+      setMsg('下载完成，正在解压…' + (sec > 0 ? '已用 ' + sec + ' 秒（首次约 1～3 分钟）' : ''));
     } else if (p.phase === 'error') {
       hint.hidden = true;
       setMsg('安装失败：' + p.error, 'err');

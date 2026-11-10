@@ -29,9 +29,12 @@ let adoptedBridgePid = 0; // 复用到的既有桥接（上次崩溃留下的孤
 
 // 单实例锁：用户重复双击时聚焦已有窗口，而不是起第二个看不见的实例
 // （第二个实例会让「关闭程序 → 重装」一直提示程序正在运行）。
+// 拿不到锁必须「立刻」结束本进程：app.quit() 是异步的，后面还会继续执行到
+// whenReady，极端情况下会留下一个没有窗口的 OAS Studio.exe —— 安装器正是按
+// 可执行文件路径判断「程序正在运行」的，于是重装永远提示关不掉。
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) {
-  app.quit();
+  app.exit(0);
 }
 
 // ────────────────────────── 设置（引擎目录） ──────────────────────────
@@ -375,7 +378,8 @@ function downloadToFile(url, dest, onProgress, redirects = 0) {
 // 解压运行时 zip（顶层为 python/）到 runtimeDir()
 // 异步执行（spawn 而非 spawnSync）：635MB 解压期间主进程不阻塞，界面保持响应。
 // 用 Win10+ 自带 bsdtar（System32，支持 zip）——PATH 里 GNU tar 不认 zip。
-function extractRuntime(zipPath) {
+// bsdtar 不吐进度，这里用「已用时间」做诚实的进度提示（只报耗时，不编百分比）。
+function extractRuntime(zipPath, onTick) {
   return new Promise((resolve, reject) => {
     const target = runtimeDir();
     const tmp = path.join(path.dirname(target), '.python-extract-tmp');
@@ -383,12 +387,19 @@ function extractRuntime(zipPath) {
     fs.rmSync(tmp, { recursive: true, force: true });
     // bsdtar 的 -C 要求目标目录已存在（不会自建）
     fs.mkdirSync(tmp, { recursive: true });
+    const startedAt = Date.now();
+    const timer = onTick
+      ? setInterval(() => onTick(Math.round((Date.now() - startedAt) / 1000)), 500)
+      : null;
+    const stop = () => { if (timer) clearInterval(timer); };
     const child = spawn(tarExe, ['-xf', zipPath, '-C', tmp], { windowsHide: true });
     child.on('error', (err) => {
+      stop();
       fs.rmSync(tmp, { recursive: true, force: true });
       reject(err);
     });
     child.on('exit', (code) => {
+      stop();
       if (code !== 0) {
         fs.rmSync(tmp, { recursive: true, force: true });
         return reject(new Error(`解压失败（tar 退出码 ${code}）`));
@@ -426,8 +437,10 @@ ipcMain.handle('download-runtime', async (_e, url) => {
     await downloadToFile(target, zipPath, (received, total) => {
       wizardSend('runtime-progress', { phase: 'downloading', received, total });
     });
-    wizardSend('runtime-progress', { phase: 'extracting' });
-    await extractRuntime(zipPath);
+    wizardSend('runtime-progress', { phase: 'extracting', elapsed: 0 });
+    await extractRuntime(zipPath, (elapsed) => {
+      wizardSend('runtime-progress', { phase: 'extracting', elapsed });
+    });
     fs.rmSync(zipPath, { force: true });
     const st = runtimeStatus();
     wizardSend('runtime-progress', { phase: 'done' });
@@ -503,8 +516,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
-  if (!singleInstance) return; // 已有实例在跑，本进程立刻退出
-  registerAppProtocol();
+  if (!singleInstance) return; // 已有实例在跑，本进程立刻退出  registerAppProtocol();
   buildMenu();
 
   // 老版本运行时在安装目录内，升级后先搬到用户目录再判断
@@ -539,11 +551,19 @@ app.whenReady().then(async () => {
 
 // 结束一棵进程树。只 kill 直连子进程（TerminateProcess）不会触发 Python 的
 // atexit，OCR 守护进程会变成孤儿，表现为「关了控制台但进程还在」。
+// 注意：必须用异步 spawn。spawnSync 会阻塞主线程，用户点 X 之后窗口消失、
+// 进程却要等 taskkill 跑完才退出（几秒），这期间启动安装器就会被判成
+// 「程序仍在运行」——正是「关不干净」的体感来源。
 function killTree(pid) {
   try {
     if (!pid) return;
     if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+      const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref(); // 我们自己退出后，taskkill 继续把树收完
     } else {
       process.kill(pid, 'SIGKILL');
     }
@@ -553,6 +573,7 @@ function killTree(pid) {
 function stopBridge() {
   const ownPid = bridgeOwned && bridgeProc ? bridgeProc.pid : 0;
   bridgeProc = null;
+  bridgeOwned = false;
   killTree(ownPid);
   if (adoptedBridgePid && adoptedBridgePid !== ownPid) killTree(adoptedBridgePid);
   adoptedBridgePid = 0;
@@ -572,13 +593,39 @@ if (singleInstance) {
   });
 }
 
+// 退出：先回收进程树，再让 Electron 正常退出；若 1.5 秒内没退掉（桥接卡住、
+// 渲染进程无响应等），直接 app.exit(0) 硬结束——宁可少一次优雅收尾，
+// 也不能留一个僵尸进程挡住下一次安装。
+let quitting = false;
+function beginQuit() {
+  if (quitting) return;
+  quitting = true;
+  stopBridge();
+  const hardExit = setTimeout(() => {
+    try { app.exit(0); } catch { process.exit(0); }
+  }, 1500);
+  hardExit.unref?.();
+  app.quit();
+}
+
 app.on('window-all-closed', () => {
   if (bridgeStarting) return; // 向导已关、主窗口未建：过渡期不退出
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin') beginQuit();
 });
 
-app.on('before-quit', stopBridge);
+app.on('before-quit', (e) => {
+  if (quitting) return;
+  e.preventDefault();
+  beginQuit();
+});
 app.on('will-quit', stopBridge);
+
+// 兜底：进程无论如何要退出时，最后再踢一次（此时只能用同步方式）
 process.on('exit', () => {
-  try { stopBridge(); } catch { /* ignore */ }
+  try {
+    const pid = bridgeProc && bridgeProc.pid;
+    if (pid && process.platform === 'win32') {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 3000 });
+    }
+  } catch { /* ignore */ }
 });
