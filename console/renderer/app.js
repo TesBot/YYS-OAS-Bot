@@ -396,10 +396,15 @@
   }
 
   async function removeInstance(name) {
-    if (!confirm(`确定解绑账号 ${name}？\n配置会被删除（.bak 备份保留）。`)) return;
+    const last = state.instances.length <= 1;
+    const tip = last
+      ? `确定解绑账号 ${name}？\n这是最后一个账号，解绑后总览会变成空态，随时可以重新绑定。`
+      : `确定解绑账号 ${name}？\n配置会被删除（.bak 备份保留），编排表里的引用会一并摘掉。`;
+    if (!confirm(tip)) return;
     try {
-      await api(`/api/instances/${name}`, { method: 'DELETE' });
-      toast('已解绑', 'ok');
+      const r = await api(`/api/instances/${name}`, { method: 'DELETE' });
+      if (r && r.remaining === 0) toast('已解绑，当前没有账号了，可重新绑定', 'ok');
+      else toast('已解绑', 'ok');
       await loadInstances();
       render();
     } catch (e) { toast('解绑失败：' + e.message, 'err'); }

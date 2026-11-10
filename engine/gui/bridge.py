@@ -132,9 +132,11 @@ def _start_server_daemon() -> None:
 def _instance_files() -> list[Path]:
     if not CONFIG_DIR.exists():
         return []
+    # 注意：gui_*.json 是控制台自己的状态文件（账号资料/编排表/皮肤识别缓存），
+    # 不是引擎实例配置，必须排除，否则会被当成账号列出来。
     return sorted(p for p in CONFIG_DIR.glob("*.json")
-                  if p.name not in ("plans.json", "template.json",
-                                    "gui_flows.json", "gui_profiles.json")
+                  if p.name not in ("plans.json", "template.json")
+                  and not p.name.startswith("gui_")
                   and not p.name.endswith(".bak"))
 
 
@@ -713,11 +715,43 @@ def update_instance(name: str, payload: dict = Body(...)):
 
 @app.delete("/api/instances/{name}")
 def delete_instance(name: str):
+    """解绑账号。允许删掉最后一个账号（删空后总览显示空态，可重新绑定）。"""
     path = _instance_path(name)
-    if len(_instance_files()) <= 1:
-        raise HTTPException(400, "至少保留一个实例")
+
+    # 1. 先停掉该实例正在跑的任务，避免删了配置子进程还在操作模拟器
+    for run in list(_RUNS.values()):
+        if run.get("instance") != name or run.get("status") not in ("running", "pending"):
+            continue
+        proc = run.get("proc")
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        run["status"] = "stopped"
+        run["finished"] = datetime.now().isoformat(timespec="seconds")
+
+    # 2. 从账号资料里移除
+    profiles = _load_profiles()
+    if profiles.pop(name, None) is not None:
+        _save_profiles(profiles)
+
+    # 3. 从编排表里摘掉引用（编排表本身保留，用户可再绑定新账号）
+    flows = _load_flows()
+    touched = False
+    for flow in flows:
+        accounts = flow.get("accounts") or []
+        if name in accounts:
+            flow["accounts"] = [a for a in accounts if a != name]
+            touched = True
+    if touched:
+        _save_flows(flows)
+
+    # 4. 作废皮肤识别缓存并删除配置
+    _costume_state_drop(name)
     path.unlink()
-    return {"ok": True}
+    return {"ok": True, "remaining": len(_instance_files())}
 
 
 @app.post("/api/instances/{name}/test")
