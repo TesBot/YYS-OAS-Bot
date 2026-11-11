@@ -1673,10 +1673,16 @@ class BattleWait(BaseTask, GeneralBattleAssets):
         handlers = [getattr(self, func_name, None) for func_name in battle_wait_plan.sequence_function_names()]
         self.setup_hook(handlers=handlers)
 
+        # 每场战斗重新识别战斗主题（游戏内主题可随时更换）
+        self._battle_theme_autofix_done = False
+
         while True:
             # 点击会清空卡死检测的记录，战斗期间每轮补登记，避免慢速战斗被 60s 阈值误杀
             self.rearm_long_wait()
             self.screenshot()
+            # 战斗主题自动适配：实战画面出现后识别一次并切换对应模板
+            if hasattr(self, 'battle_theme_autofix'):
+                self.battle_theme_autofix()
             hook_enabled = runtime.hook_enabled()
             # self.state_show()
             for handler in handlers:

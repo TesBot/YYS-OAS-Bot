@@ -55,6 +55,8 @@ class BaseTask(GlobalGameAssets, CostumeBase):
         self.interval_timer = {}  # 这个是用来记录每个匹配的运行间隔的，用于控制运行频率
         self.animates = {}  # 保存缓存
         self.start_time = datetime.now()  # 启动的时间
+        # 必须先快照默认主题参数，check_costume 的切换是原地改写、无法自行恢复
+        self.snapshot_battle_defaults()
         self.check_costume(self.config.global_game.costume_config)
         # self.friend_timer = None  # 这个是用来记录勾协的时间的
         # if self.config.global_game.emergency.invitation_detect_interval:
