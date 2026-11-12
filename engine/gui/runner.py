@@ -72,17 +72,6 @@ def main() -> int:
         from script import Script
 
         script = Script(args.config)
-
-        # 庭院皮肤自动纠正：引擎的页面识别模板必须与实际皮肤一致，
-        # 上游没有自动识别，换账号时皮肤不同会导致 page_main 识别失败。
-        # 这里在任务启动前截一帧比对，认准了才回写当前账号的配置。
-        try:
-            from gui.costume_autodetect import autofix
-
-            autofix(script)
-        except Exception as exc:  # 识别环节任何异常都不该阻断任务
-            print(f"=== NOTE: 庭院皮肤自动识别跳过 ({type(exc).__name__}: {exc}) ===", flush=True)
-
         print(f"=== RUN {task} on config {args.config} (key: {args.task}) ===", flush=True)
         result = script.run(task)
         print(f"=== RESULT: {result} ===", flush=True)

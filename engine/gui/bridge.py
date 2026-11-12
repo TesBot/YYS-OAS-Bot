@@ -133,7 +133,7 @@ def _start_server_daemon() -> None:
 def _instance_files() -> list[Path]:
     if not CONFIG_DIR.exists():
         return []
-    # 注意：gui_*.json 是控制台自己的状态文件（账号资料/编排表/皮肤识别缓存），
+    # 注意：gui_*.json 是控制台自己的状态文件（账号资料/编排表等），
     # 不是引擎实例配置，必须排除，否则会被当成账号列出来。
     return sorted(p for p in CONFIG_DIR.glob("*.json")
                   if p.name not in ("plans.json", "template.json")
@@ -594,36 +594,6 @@ def health():
 
 # ────────────────────────── 实例 ──────────────────────────
 
-def _costume_state_get(name: str) -> dict:
-    """读取某个实例的庭院皮肤识别缓存（不存在返回空 dict）。"""
-    try:
-        from gui import costume_autodetect as detector
-
-        return detector.read_state(name) or {}
-    except Exception:
-        return {}
-
-
-def _costume_state_drop(name: str) -> None:
-    """作废某个实例的识别缓存（实例离线/解绑时调用）。"""
-    try:
-        from gui import costume_autodetect as detector
-
-        detector.drop_state(name)
-    except Exception:
-        pass
-
-
-def _costume_name(skin: str) -> str:
-    """皮肤枚举 → 中文名（界面展示用）。"""
-    try:
-        from gui import costume_autodetect as detector
-
-        return detector.name_of(skin)
-    except Exception:
-        return skin
-
-
 @app.get("/api/instances")
 def list_instances():
     devices = set(_adb_devices())
@@ -639,10 +609,6 @@ def list_instances():
         if isinstance(costume, list):  # 兼容历史版本写入的候选列表，取首个
             costume = costume[0] if costume else ""
         serial_online = serial in devices
-        if not serial_online:
-            # 模拟器断开过：识别结论作废，下次任务启动会重新识别
-            _costume_state_drop(path.stem)
-        cstate = _costume_state_get(path.stem) or {}
         profile = profiles.get(path.stem) or {}
         out.append({
             "name": path.stem,
@@ -658,11 +624,6 @@ def list_instances():
             "package_name": device.get("package_name"),
             "emulatorinfo_name": device.get("emulatorinfo_name"),
             "costume_main_type": costume,
-            "costume_name": _costume_name(costume),
-            "costume_detected": cstate.get("skin") or "",
-            "costume_detected_label": cstate.get("label") or "",
-            "costume_checked_at": cstate.get("checked_at") or 0,
-            "costume_score": cstate.get("score"),
             "running_task": cfg.get("running_task"),
             "flows": [f["name"] for f in flows if path.stem in (f.get("accounts") or [])],
             "enabled_tasks": sum(1 for v in cfg.values()
@@ -750,8 +711,7 @@ def delete_instance(name: str):
     if touched:
         _save_flows(flows)
 
-    # 4. 作废皮肤识别缓存并删除配置
-    _costume_state_drop(name)
+    # 4. 删除配置
     path.unlink()
     return {"ok": True, "remaining": len(_instance_files())}
 
@@ -822,44 +782,6 @@ def set_task_enabled(name: str, task: str, payload: dict = Body(...)):
         sched["next_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _save(path, cfg)
     return {"ok": True, "enabled": enabled}
-
-
-@app.post("/api/instances/{name}/costume/detect")
-def detect_costume(name: str, force: bool = Query(True)):
-    """立即识别当前庭院皮肤并回写配置。
-
-    典型场景：模拟器没有下线，只是重新登录了另一个号。识别结果会写入
-    config/gui_costume_state.json，后续任务启动命中缓存就不再重复识别。
-    """
-    _instance_path(name)
-    cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "costume_probe.py"),
-           "--config", name]
-    if force:
-        cmd.append("--force")
-    kwargs = {}
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    try:
-        proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=180, **kwargs)
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "识别超时（180s），请确认模拟器与游戏在前台")
-
-    payload: dict = {}
-    for line in reversed((proc.stdout or "").strip().splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                payload = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                continue
-    if not payload:
-        tail = ((proc.stderr or "") + (proc.stdout or ""))[-400:]
-        raise HTTPException(500, f"识别进程异常退出：{tail}")
-    if not payload.get("ok"):
-        raise HTTPException(400, payload.get("error") or "识别失败")
-    return payload
 
 
 @app.get("/api/instances/{name}/raw")

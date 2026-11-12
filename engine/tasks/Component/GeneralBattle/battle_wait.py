@@ -1104,20 +1104,6 @@ class BattleWait(BaseTask, GeneralBattleAssets):
         self.device.stuck_record_add('BATTLE_STATUS_S')
         self.device.click_record_clear()
 
-    def rearm_long_wait(self) -> None:
-        """
-        战斗中重新登记长等待项 BATTLE_STATUS_S。
-
-        任何一次点击都会走 handle_control_check() -> stuck_record_clear()，
-        把 setup 阶段登记的 BATTLE_STATUS_S 连同 60s / 300s 两个定时器一起清空。
-        此后若战斗时长超过 60s（地域鬼王这类慢速战斗很常见），
-        stuck_record_check() 取到的 detect_record 是空集，长等待豁免判定失效，
-        就会在战斗刚打完、结算界面还没来得及识别的瞬间误报 GameStuckError。
-        这里每轮补登记一次，把战斗的有效等待上限恢复成设计上的 300s。
-        """
-        if 'BATTLE_STATUS_S' not in self.device.detect_record:
-            self.device.stuck_record_add('BATTLE_STATUS_S')
-
     # ------------------------------------------------------------------------------------------------------------------
     # build in
     # ------------------------------------------------------------------------------------------------------------------
@@ -1673,16 +1659,8 @@ class BattleWait(BaseTask, GeneralBattleAssets):
         handlers = [getattr(self, func_name, None) for func_name in battle_wait_plan.sequence_function_names()]
         self.setup_hook(handlers=handlers)
 
-        # 每场战斗重新识别战斗主题（游戏内主题可随时更换）
-        self._battle_theme_autofix_done = False
-
         while True:
-            # 点击会清空卡死检测的记录，战斗期间每轮补登记，避免慢速战斗被 60s 阈值误杀
-            self.rearm_long_wait()
             self.screenshot()
-            # 战斗主题自动适配：实战画面出现后识别一次并切换对应模板
-            if hasattr(self, 'battle_theme_autofix'):
-                self.battle_theme_autofix()
             hook_enabled = runtime.hook_enabled()
             # self.state_show()
             for handler in handlers:
