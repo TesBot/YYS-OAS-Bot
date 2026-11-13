@@ -10,7 +10,7 @@
   "upstream": {
     "repo": "https://github.com/nearaura/OnmyojiAutoScript",
     "branch": "dev",
-    "commit": "305defd057fb764e99c25c7506a28a910497519f",
-    "synced_at": "2026-11-10"
+    "commit": "f1ba2a5c504876b200a8bf4416a94c5631a870bb",
+    "synced_at": "2026-11-13"
   }
 }

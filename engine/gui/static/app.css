@@ -662,14 +662,15 @@ body.dock-resizing .logdock { transition: none; }
 }
 @keyframes skel { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 
-/* 弹窗处理：每实例一行策略选择 */
+/* 协助悬赏封印邀请：两列（模拟器账号 / 操作处理） */
 .popup-row {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding: 10px 0; border-bottom: 1px solid var(--line);
 }
 .popup-row:last-of-type { border-bottom: 0; }
 .popup-name { display: flex; align-items: center; gap: 8px; min-width: 220px; }
-.popup-label { color: var(--text-3); font-size: 12px; }
+.popup-ops { flex: 1; display: flex; align-items: center; gap: 8px; }
+.popup-head { color: var(--text-3); font-size: 12px; padding: 2px 0 8px; border-bottom: 1px solid var(--line); }
 
 /* 账号卡片：当前状态行 */
 .acct-act {

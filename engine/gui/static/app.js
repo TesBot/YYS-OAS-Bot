@@ -1830,30 +1830,11 @@
 
   /* ---------------- 高级 ---------------- */
   function renderAdvanced(root) {
-    root.appendChild(el('div', { class: 'section-title' }, el('h2', { text: '实例原始配置' }),
-      el('span', { class: 'sub', text: '直接编辑引擎 JSON，危险操作请先备份。' })));
-    const grid = el('div', { class: 'grid grid-2' });
-    state.instances.forEach((inst) => {
-      grid.appendChild(el('div', { class: 'task-card' },
-        el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: inst.nickname || inst.name }),
-          el('span', { class: 'badge badge-dim', text: inst.name })),
-        el('div', { class: 'tc-desc', text: `设备 ${inst.serial} · 庭院皮肤 ${inst.costume_main_type || '未配置'}` }),
-        el('div', { class: 'tc-ops' },
-          btn('打开 JSON', 'cog', () => openRawDrawer(inst.name), 'sm')),
-      ));
-    });
-    root.appendChild(grid);
-
-    root.appendChild(el('div', { class: 'section-title mt-20' }, el('h2', { text: '弹窗处理' })));
+    root.appendChild(el('div', { class: 'section-title' }, el('h2', { text: '协助悬赏封印邀请' }),
+      el('span', { class: 'sub', text: '好友发起协助邀请时的处理策略，按模拟器账号设置。' })));
     const popupPanel = el('div', { class: 'panel' });
     root.appendChild(popupPanel);
     paintPopupPolicy(popupPanel);
-
-    root.appendChild(el('div', { class: 'section-title mt-20' }, el('h2', { text: '联动总线（可选）' })));
-    root.appendChild(el('div', { class: 'panel' }, el('div', { class: 'panel-body' },
-      el('p', { class: 'small muted', text: '引擎自带基于 MQTT 的跨进程联动总线（global_game.team_flow）。本工具默认使用「双进程并行 + 角色注入」，不依赖 broker；只有在你有私有 MQTT 服务时才需要开启它。' }),
-      el('p', { class: 'small muted mt-8', text: '配置项：broker / port / transport / ca / username / password，位于各实例 JSON 的 global_game.team_flow。' }),
-    )));
   }
 
   const POPUP_OPTIONS = [
@@ -1884,12 +1865,14 @@
       }
     }));
     body.innerHTML = '';
+    body.appendChild(el('div', { class: 'popup-row popup-head' },
+      el('div', { class: 'popup-name', text: '模拟器账号' }),
+      el('div', { class: 'popup-ops', text: '操作处理' })));
     values.forEach(({ inst, value }) => {
       const row = el('div', { class: 'popup-row' });
       row.appendChild(el('div', { class: 'popup-name' },
         el('strong', { text: inst.nickname || inst.name }),
-        el('span', { class: 'badge badge-dim', text: inst.name }),
-        el('span', { class: 'popup-label', text: '协助悬赏封印邀请' })));
+        el('span', { class: 'badge badge-dim', text: inst.name })));
       const chips = el('div', { class: 'chips' });
       POPUP_OPTIONS.forEach((opt) => {
         const chip = el('button', { class: 'chip' + (value === opt.value ? ' active' : ''), text: opt.label });
@@ -1906,26 +1889,6 @@
       });
       row.appendChild(chips);
       body.appendChild(row);
-    });
-  }
-
-  async function openRawDrawer(name) {
-    const data = await api(`/api/instances/${name}/raw`);
-    const area = el('textarea', { class: 'textarea', style: 'height:520px' });
-    area.value = JSON.stringify(data.config, null, 2);
-    openDrawer({
-      kicker: '高级', title: name + '.json', body: area,
-      foot: [btn('关闭', 'x', closeDrawer, 'ghost'),
-        btn('保存', 'check', async () => {
-          try {
-            const parsed = JSON.parse(area.value);
-            await api(`/api/instances/${name}/raw`, { method: 'PUT', body: { config: parsed } });
-            toast('已保存', 'ok');
-            closeDrawer();
-            await loadInstances();
-            render();
-          } catch (e) { toast('保存失败：' + e.message, 'err'); }
-        }, 'primary')],
     });
   }
 
