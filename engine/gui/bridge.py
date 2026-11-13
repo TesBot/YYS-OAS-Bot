@@ -34,6 +34,7 @@ CONFIG_DIR = ROOT / "config"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLAN_FILE = CONFIG_DIR / "plans.json"
 FLOW_FILE = CONFIG_DIR / "gui_flows.json"
+FLOW_LIBRARY_FILE = CONFIG_DIR / "gui_flow_library.json"
 PROFILE_FILE = CONFIG_DIR / "gui_profiles.json"
 SCHEMA_CACHE = Path(__file__).resolve().parent / ".cache" / "schema.json"
 # 便携整包布局：bridge 由打包内嵌的 Python 直接运行，子进程一律用当前解释器；
@@ -933,6 +934,76 @@ def duplicate_flow(flow_id: str):
     flows.append(copy)
     _save_flows(flows)
     return {"ok": True, "flow": copy}
+
+
+# ────────────────────────── 模板库 ──────────────────────────
+
+def _load_flow_library() -> list[dict]:
+    if not FLOW_LIBRARY_FILE.exists():
+        return []
+    try:
+        data = json.loads(FLOW_LIBRARY_FILE.read_text(encoding="utf-8"))
+        data = data.get("templates") if isinstance(data, dict) else data
+        return data if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _save_flow_library(templates: list[dict]) -> None:
+    FLOW_LIBRARY_FILE.write_text(json.dumps({"templates": templates}, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+
+
+def _template_steps(steps: list[dict]) -> list[dict]:
+    """模板与账号/模拟器无关：只留任务、参数与顺序。"""
+    out = []
+    for s in steps or []:
+        task = s.get("task")
+        if not task or task == catalog.TEAM_SETUP_KEY:
+            continue
+        mode = s.get("mode") if s.get("mode") in ("solo", "team") else "solo"
+        if mode == "team" and not catalog.task_team(task):
+            mode = "solo"
+        out.append({"task": task, "enabled": bool(s.get("enabled", True)),
+                    "mode": mode, "patch": s.get("patch") or {}, "note": s.get("note") or ""})
+    return out
+
+
+@app.get("/api/flow-library")
+def list_flow_library():
+    return {"templates": _load_flow_library()}
+
+
+@app.post("/api/flow-library")
+def save_flow_template(payload: dict = Body(...)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "模板名称不能为空")
+    steps = payload.get("steps")
+    if steps is None:
+        src = next((f for f in _load_flows() if f.get("id") == payload.get("flow_id")), None)
+        if src is None:
+            raise HTTPException(404, "编排表不存在")
+        steps = src.get("steps")
+    steps = _template_steps(steps)
+    if not steps:
+        raise HTTPException(400, "没有可保存的任务步骤")
+    templates = [t for t in _load_flow_library() if t.get("name") != name]  # 同名覆盖
+    tpl = {"id": f"t{uuid.uuid4().hex[:8]}", "name": name, "steps": steps,
+           "saved": datetime.now().isoformat(timespec="seconds")}
+    templates.append(tpl)
+    _save_flow_library(templates)
+    return {"ok": True, "template": tpl}
+
+
+@app.delete("/api/flow-library/{tpl_id}")
+def delete_flow_template(tpl_id: str):
+    templates = _load_flow_library()
+    remain = [t for t in templates if t.get("id") != tpl_id]
+    if len(remain) == len(templates):
+        raise HTTPException(404, "模板不存在")
+    _save_flow_library(remain)
+    return {"ok": True}
 
 
 # ────────────────────────── 编排执行 ──────────────────────────

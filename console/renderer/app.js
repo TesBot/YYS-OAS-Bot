@@ -91,6 +91,7 @@
     instances: [],
     devices: [],
     flows: [],
+    flowLib: [],
     jobs: [],
     runs: [],
     flowId: null,
@@ -206,6 +207,11 @@
     }
   }
 
+  async function loadFlowLib() {
+    try { state.flowLib = (await api('/api/flow-library')).templates || []; }
+    catch (e) { state.flowLib = []; }
+  }
+
   async function loadJobs() {
     const data = await api('/api/jobs');
     state.jobs = data.jobs || [];
@@ -217,7 +223,7 @@
   }
 
   async function refreshAll() {
-    await Promise.all([loadCatalog(), loadInstances(), loadFlows(), loadJobs(), loadRuns()]);
+    await Promise.all([loadCatalog(), loadInstances(), loadFlows(), loadFlowLib(), loadJobs(), loadRuns()]);
     await loadDevices();
     render();
   }
@@ -237,6 +243,10 @@
       state.instances.forEach((inst) => grid.appendChild(accountCard(inst)));
       root.appendChild(grid);
     }
+    root.appendChild(el('p', {
+      class: 'small muted mt-8',
+      text: '模拟器分辨率需设置为 1280×720，否则任务无法正常运行。',
+    }));
 
     // 检测到但还没绑定的模拟器，给一条窄表就够
     const unbound = state.devices.filter((d) => !d.bound_to);
@@ -313,8 +323,6 @@
       metaItem('模拟器', device
         ? `${inst.serial} · ${device.resolution || ''}`
         : `${inst.serial || '—'} · 未扫描到`),
-      metaItem('点击/截图', `${inst.control_method || '?'} / ${inst.screenshot_method || '?'}`),
-      metaItem('庭院皮肤', inst.costume_main_type || '未配置'),
       metaItem('编排表', (inst.flows && inst.flows.length) ? inst.flows.join('、') : '未加入'),
     ));
     card.appendChild(el('div', { class: 'acct-actions' },
@@ -657,6 +665,7 @@
     head.appendChild(el('div', { class: 'row' },
       btn('改绑定', 'cog', () => openFlowBindDrawer(flow), 'ghost'),
       btn('重命名', 'sliders', () => renameFlow(flow), 'ghost'),
+      btn('存为模板', 'copy', () => saveFlowAsTemplate(flow), 'ghost'),
       btn('删除', 'trash', () => deleteFlow(flow), 'ghost'),
     ));
     head.appendChild(el('div', { class: 'fl-bind' },
@@ -920,26 +929,44 @@
     }
     paintChips();
 
+    const body = el('div', {},
+      field('编排表名称', nameInput),
+      el('div', { class: 'field' }, el('label', { text: '绑定账号（第一个为队长；多开可绑定任意多个）' }), chips),
+      el('p', { class: 'hint', text: '创建后在编辑页逐个添加任务即可。' }),
+    );
+
+    let tplSelect = null;
+    if (state.flowLib.length) {
+      tplSelect = el('select', { class: 'input' });
+      tplSelect.appendChild(el('option', { value: '', text: '空白编排' }));
+      state.flowLib.forEach((t) => tplSelect.appendChild(el('option', { value: t.id, text: t.name })));
+      body.appendChild(field('从模板创建', tplSelect));
+    }
+
     openDrawer({
       kicker: '任务编排',
       title: '新建编排表',
-      body: el('div', {},
-        field('编排表名称', nameInput),
-        el('div', { class: 'field' }, el('label', { text: '绑定账号（第一个为队长；多开可绑定任意多个）' }), chips),
-        el('p', { class: 'hint', text: '创建后在编辑页逐个添加任务即可。' }),
-      ),
+      body,
       foot: [
         btn('取消', 'x', closeDrawer, 'ghost'),
         btn('创建', 'plus', async () => {
           const name = nameInput.value.trim() || '未命名编排';
           if (!accounts.length) return toast('请先绑定账号', 'err');
+          let steps = [];
+          const tpl = tplSelect && state.flowLib.find((t) => t.id === tplSelect.value);
+          if (tpl) {
+            steps = withTeamStep(tpl.steps.map((s) => ({
+              task: s.task, mode: s.mode === 'team' ? 'team' : 'solo',
+              patch: s.patch || {}, note: s.note || '', enabled: s.enabled !== false,
+            })), accounts);
+          }
           try {
-            const r = await api('/api/flows', { method: 'POST', body: { name, accounts, steps: [] } });
+            const r = await api('/api/flows', { method: 'POST', body: { name, accounts, steps } });
             state.flowId = r.flow.id;
             await loadFlows();
             closeDrawer();
             go('flows');
-            toast('编排已创建', 'ok');
+            toast(tpl ? '编排已按模板创建' : '编排已创建', 'ok');
           } catch (e) { toast('创建失败：' + e.message, 'err'); }
         }, 'primary'),
       ],
@@ -1009,6 +1036,32 @@
       kicker: '任务编排', title: '重命名', body: field('名称', input),
       foot: [btn('取消', 'x', closeDrawer, 'ghost'),
         btn('保存', 'check', async () => { await saveFlow(Object.assign({}, flow, { name: input.value.trim() || flow.name })); closeDrawer(); }, 'primary')],
+    });
+  }
+
+  function saveFlowAsTemplate(flow) {
+    if (!flow.steps.some((s) => s.task !== 'team_setup')) return toast('空编排没有可保存的步骤', 'warn');
+    const nameInput = el('input', { class: 'input', value: flow.name });
+    openDrawer({
+      kicker: '模板库', title: '保存为模板',
+      body: el('div', {},
+        field('模板名称', nameInput),
+        el('p', { class: 'hint', text: '模板只保留任务与参数，不含账号和模拟器，可长期复用。' }),
+      ),
+      foot: [
+        btn('取消', 'x', closeDrawer, 'ghost'),
+        btn('保存', 'check', async () => {
+          try {
+            await api('/api/flow-library', {
+              method: 'POST',
+              body: { name: nameInput.value.trim() || flow.name, flow_id: flow.id },
+            });
+            await loadFlowLib();
+            closeDrawer();
+            toast('已保存到模板库', 'ok');
+          } catch (e) { toast('保存失败：' + e.message, 'err'); }
+        }, 'primary'),
+      ],
     });
   }
 
@@ -1435,26 +1488,61 @@
     });
   }
 
+  function applyTemplateSteps(tpl, flow) {
+    const added = withTeamStep(tpl.steps.map((s) => ({
+      task: s.task, mode: s.mode === 'team' ? 'team' : 'solo',
+      patch: s.patch || {}, note: s.note || '', enabled: s.enabled !== false,
+    })), flow.accounts);
+    flow.steps = flow.steps.concat(added);
+    return saveFlow(flow);
+  }
+
   function openTemplatePicker() {
+    const body = el('div');
+    const builtin = (state.catalog ? state.catalog.flow_templates : []);
+    const mine = state.flowLib || [];
     const list = el('div', { class: 'grid grid-2' });
-    (state.catalog ? state.catalog.flow_templates : []).forEach((tpl) => {
+    builtin.forEach((tpl) => {
       list.appendChild(el('div', { class: 'task-card' },
         el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: tpl.name })),
         el('div', { class: 'tc-desc', text: tpl.desc }),
         el('div', { class: 'tc-ops' },
           btn('追加步骤', 'plus', async () => {
             const flow = currentFlow();
-            const added = withTeamStep(tpl.steps.map((s) => ({
-              task: s.task, mode: s.mode === 'duo' ? 'team' : (s.mode || 'solo'),
-              patch: s.patch || {}, enabled: true,
-            })), flow.accounts);
-            flow.steps = flow.steps.concat(added);
-            await saveFlow(flow);
+            await applyTemplateSteps(tpl, flow);
             closeModal();
           }, 'sm primary')),
       ));
     });
-    openModal({ title: '模板步骤', body: list, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
+    if (mine.length) {
+      const head = el('div', { class: 'panel-head', style: 'margin-top:14px' },
+        el('h3', { text: '我的模板' }));
+      const myList = el('div', { class: 'grid grid-2', style: 'margin-top:8px' });
+      mine.forEach((tpl) => {
+        myList.appendChild(el('div', { class: 'task-card' },
+          el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: tpl.name })),
+          el('div', { class: 'tc-desc', text: `${tpl.steps.length} 步` }),
+          el('div', { class: 'tc-ops' },
+            btn('追加步骤', 'plus', async () => {
+              const flow = currentFlow();
+              await applyTemplateSteps(tpl, flow);
+              closeModal();
+            }, 'sm primary'),
+            btn('删除', 'trash', async () => {
+              if (!confirm(`删除模板「${tpl.name}」？`)) return;
+              await api(`/api/flow-library/${tpl.id}`, { method: 'DELETE' });
+              await loadFlowLib();
+              closeModal();
+              toast('模板已删除', 'ok');
+            }, 'sm ghost'),
+          ),
+        ));
+      });
+      body.append(list, head, myList);
+    } else {
+      body.appendChild(list);
+    }
+    openModal({ title: '模板步骤', body, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
   }
 
   /* ---- 步骤参数配置 ---- */
