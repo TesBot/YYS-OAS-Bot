@@ -1177,8 +1177,40 @@ def stop_job(job_id: str):
 
 # ────────────────────────── 运行 ──────────────────────────
 
+# 百鬼夜行有独立的高频截图/点击通道（tasks/Hyakkiyakou/slave/hya_device.py），
+# 只支持这两种取值，且 window_* 依赖窗口句柄树。启动前按实例全局方式对齐。
+_HYA_SCREENSHOT = {"nemu_ipc": "nemu_ipc", "window_background": "window_background"}
+_HYA_CONTROL = {"minitouch": "minitouch", "window_message": "window_message"}
+
+
+def _align_hyakkiyakou_device(instance: str) -> None:
+    path = _instance_path(instance)
+    cfg = _load(path)
+    device = (cfg.get("script") or {}).get("device") or {}
+    hya = cfg.get("hyakkiyakou")
+    if not isinstance(hya, dict):
+        return
+    debug = hya.get("debug_config")
+    if not isinstance(debug, dict):
+        debug = {}
+        hya["debug_config"] = debug
+    shot = _HYA_SCREENSHOT.get(device.get("screenshot_method"))
+    ctrl = _HYA_CONTROL.get(device.get("control_method"))
+    changed = False
+    if shot and debug.get("hya_screenshot_method") != shot:
+        debug["hya_screenshot_method"] = shot
+        changed = True
+    if ctrl and debug.get("hya_control_method") != ctrl:
+        debug["hya_control_method"] = ctrl
+        changed = True
+    if changed:
+        _save(path, cfg)
+
+
 def _spawn_run(instance: str, task: str, force_fight: bool, batch: str | None = None) -> str:
     _instance_path(instance)
+    if (task or "").lower() == "hyakkiyakou":
+        _align_hyakkiyakou_device(instance)
     run_id = uuid.uuid4().hex[:10]
     log_path = ROOT / "log" / "gui" / f"{run_id}_{instance}_{task}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
