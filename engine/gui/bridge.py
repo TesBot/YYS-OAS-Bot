@@ -1022,6 +1022,14 @@ def _apply_step_config(instance: str, task: str, patch: dict, role: str | None) 
             raise HTTPException(400, f"{instance} 缺少任务配置: {task}（该任务不支持参数）")
         return
     if patch:
+        if (task or "").lower() == "hyakkiyakou" and isinstance(patch.get("debug_config"), dict):
+            # 高频截图/点击通道由 _align_hyakkiyakou_device 在启动时按设备动态决定；
+            # 编排里保存的旧值（通常是 window_*）不能回写，否则会把可用配置改坏。
+            patch = dict(patch)
+            patch["debug_config"] = {
+                k: v for k, v in patch["debug_config"].items()
+                if k not in ("hya_screenshot_method", "hya_control_method")
+            }
         _deep_merge(section, patch)
     if role:
         status_path = _team_status_path(cfg, task)
@@ -1177,10 +1185,22 @@ def stop_job(job_id: str):
 
 # ────────────────────────── 运行 ──────────────────────────
 
-# 百鬼夜行有独立的高频截图/点击通道（tasks/Hyakkiyakou/slave/hya_device.py），
-# 只支持这两种取值，且 window_* 依赖窗口句柄树。启动前按实例全局方式对齐。
-_HYA_SCREENSHOT = {"nemu_ipc": "nemu_ipc", "window_background": "window_background"}
-_HYA_CONTROL = {"minitouch": "minitouch", "window_message": "window_message"}
+# 百鬼夜行有独立的高频截图/点击通道（tasks/Hyakkiyakou/slave/hya_device.py）：
+# fast_screenshot 只有 window_background / nemu_ipc 两条分支，fast_click 只有
+# window_message / minitouch 两条分支。window_* 依赖窗口句柄树，句柄为空时必然
+# 抛 'Device' object has no attribute 'root_node'。启动时按实例全局方式对齐。
+# 注意全局截图常为 auto（引擎跑完基准测试才回写成具体值），auto 在 MuMu 上
+# 解析为 nemu_ipc，因此必须一并处理，不能等到引擎回写后再对齐。
+_HYA_SCREENSHOT = {
+    "nemu_ipc": "nemu_ipc",
+    "window_background": "window_background",
+    "auto": "nemu_ipc",
+}
+_HYA_CONTROL = {
+    "minitouch": "minitouch",
+    "window_message": "window_message",
+    "auto": "minitouch",
+}
 
 
 def _align_hyakkiyakou_device(instance: str) -> None:
@@ -1196,6 +1216,9 @@ def _align_hyakkiyakou_device(instance: str) -> None:
         hya["debug_config"] = debug
     shot = _HYA_SCREENSHOT.get(device.get("screenshot_method"))
     ctrl = _HYA_CONTROL.get(device.get("control_method"))
+    if not device.get("handle"):
+        # 没有窗口句柄树：window_* 一定崩，直接走另一条不依赖句柄的通路
+        shot, ctrl = "nemu_ipc", "minitouch"
     changed = False
     if shot and debug.get("hya_screenshot_method") != shot:
         debug["hya_screenshot_method"] = shot
