@@ -54,10 +54,15 @@ function saveSettings(patch) {
   return data;
 }
 
-// 整包布局：安装目录 resources\engine
+// 整包布局：安装目录 resources\engine。
+// 顺带兼容「手动解压到主程序同级」的非标准布局，并校验 bridge.py 是否真在。
 function bundledEngineDir() {
   if (!app.isPackaged) return null;
-  return path.join(process.resourcesPath, 'engine');
+  const primary = path.join(process.resourcesPath, 'engine');
+  if (fs.existsSync(path.join(primary, 'gui', 'bridge.py'))) return primary;
+  const sibling = path.join(path.dirname(process.execPath), 'engine');
+  if (fs.existsSync(path.join(sibling, 'gui', 'bridge.py'))) return sibling;
+  return primary;
 }
 
 // 旧版运行时位置（安装目录 resources\python）。覆盖安装/升级时会被 NSIS 删除，
@@ -135,9 +140,22 @@ function validateEngine(dir) {
   return checks;
 }
 
-// 生效引擎目录：用户覆盖优先，否则内置引擎
+// 生效引擎目录：内置引擎可用时优先，忽略旧版向导残留的失效外部路径并顺手清掉。
+// 旧版（1.1.0 前）向导可写 settings.json 的 enginePath，新版已无该入口，
+// 但残留值会盖掉安装包内置引擎，导致新机器上报「引擎目录不完整」。
 function activeEngineDir() {
-  return loadSettings().enginePath || bundledEngineDir() || '';
+  const settings = loadSettings();
+  const override = typeof settings.enginePath === 'string' ? settings.enginePath : '';
+  const bundled = bundledEngineDir();
+  const usable = (dir) => !!dir && fs.existsSync(path.join(dir, 'gui', 'bridge.py'));
+  if (usable(bundled)) {
+    if (override && path.resolve(override) !== path.resolve(bundled)) {
+      try { saveSettings({ enginePath: '' }); } catch { /* 用户目录不可写时忽略 */ }
+    }
+    return bundled;
+  }
+  if (usable(override)) return override;
+  return override || bundled || '';
 }
 
 function compareVersion(a, b) {
@@ -197,7 +215,8 @@ function startBridge(engineDir) {
     return false;
   }
   if (!fs.existsSync(bridge)) {
-    dialog.showErrorBox('引擎目录不完整', `未找到：${bridge}\n请确认选择的是引擎解压后的根目录。`);
+    dialog.showErrorBox('引擎目录不完整',
+      `未找到：${bridge}\n内置引擎应在：${bundledEngineDir() || '(未打包)'}\n请重新安装 OAS Studio。`);
     return false;
   }
   bridgeProc = spawn(python, ['-X', 'utf8', '-B', bridge, '--port', String(BRIDGE_PORT)], {
