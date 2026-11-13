@@ -665,7 +665,7 @@
     head.appendChild(el('div', { class: 'row' },
       btn('改绑定', 'cog', () => openFlowBindDrawer(flow), 'ghost'),
       btn('重命名', 'sliders', () => renameFlow(flow), 'ghost'),
-      btn('存为模板', 'copy', () => saveFlowAsTemplate(flow), 'ghost'),
+      btn('存为自定义方案', 'copy', () => saveFlowAsTemplate(flow), 'ghost'),
       btn('删除', 'trash', () => deleteFlow(flow), 'ghost'),
     ));
     head.appendChild(el('div', { class: 'fl-bind' },
@@ -703,7 +703,7 @@
     addBar.append(
       btn('添加任务', 'plus', () => openTaskPicker(), 'primary'),
       btn('自定义组队', 'users', () => openTeamDrawer(null), flow.accounts.length > 1 ? '' : 'ghost'),
-      btn('从模板创建', 'copy', () => openTemplatePicker(), 'ghost'),
+      btn('从方案创建', 'copy', () => openTemplatePicker(), 'ghost'),
     );
     detail.appendChild(addBar);
 
@@ -940,7 +940,7 @@
       tplSelect = el('select', { class: 'input' });
       tplSelect.appendChild(el('option', { value: '', text: '空白编排' }));
       state.flowLib.forEach((t) => tplSelect.appendChild(el('option', { value: t.id, text: t.name })));
-      body.appendChild(field('从模板创建', tplSelect));
+      body.appendChild(field('从自定义方案创建', tplSelect));
     }
 
     openDrawer({
@@ -966,7 +966,7 @@
             await loadFlows();
             closeDrawer();
             go('flows');
-            toast(tpl ? '编排已按模板创建' : '编排已创建', 'ok');
+            toast(tpl ? '编排已按方案创建' : '编排已创建', 'ok');
           } catch (e) { toast('创建失败：' + e.message, 'err'); }
         }, 'primary'),
       ],
@@ -1043,10 +1043,10 @@
     if (!flow.steps.some((s) => s.task !== 'team_setup')) return toast('空编排没有可保存的步骤', 'warn');
     const nameInput = el('input', { class: 'input', value: flow.name });
     openDrawer({
-      kicker: '模板库', title: '保存为模板',
+      kicker: '自定义方案', title: '存为自定义方案',
       body: el('div', {},
-        field('模板名称', nameInput),
-        el('p', { class: 'hint', text: '模板只保留任务与参数，不含账号和模拟器，可长期复用。' }),
+        field('方案名称', nameInput),
+        el('p', { class: 'hint', text: '方案只保留任务与参数，不含账号和模拟器，可长期复用。' }),
       ),
       foot: [
         btn('取消', 'x', closeDrawer, 'ghost'),
@@ -1058,7 +1058,7 @@
             });
             await loadFlowLib();
             closeDrawer();
-            toast('已保存到模板库', 'ok');
+            toast('已保存方案', 'ok');
           } catch (e) { toast('保存失败：' + e.message, 'err'); }
         }, 'primary'),
       ],
@@ -1501,6 +1501,7 @@
     const body = el('div');
     const builtin = (state.catalog ? state.catalog.flow_templates : []);
     const mine = state.flowLib || [];
+    body.appendChild(el('div', { class: 'panel-head' }, el('h3', { text: '内置方案' })));
     const list = el('div', { class: 'grid grid-2' });
     builtin.forEach((tpl) => {
       list.appendChild(el('div', { class: 'task-card' },
@@ -1514,9 +1515,10 @@
           }, 'sm primary')),
       ));
     });
+    body.appendChild(list);
     if (mine.length) {
-      const head = el('div', { class: 'panel-head', style: 'margin-top:14px' },
-        el('h3', { text: '我的模板' }));
+      body.appendChild(el('div', { class: 'panel-head', style: 'margin-top:14px' },
+        el('h3', { text: '我的方案' })));
       const myList = el('div', { class: 'grid grid-2', style: 'margin-top:8px' });
       mine.forEach((tpl) => {
         myList.appendChild(el('div', { class: 'task-card' },
@@ -1529,20 +1531,18 @@
               closeModal();
             }, 'sm primary'),
             btn('删除', 'trash', async () => {
-              if (!confirm(`删除模板「${tpl.name}」？`)) return;
+              if (!confirm(`删除方案「${tpl.name}」？`)) return;
               await api(`/api/flow-library/${tpl.id}`, { method: 'DELETE' });
               await loadFlowLib();
               closeModal();
-              toast('模板已删除', 'ok');
+              toast('方案已删除', 'ok');
             }, 'sm ghost'),
           ),
         ));
       });
-      body.append(list, head, myList);
-    } else {
-      body.appendChild(list);
+      body.appendChild(myList);
     }
-    openModal({ title: '模板步骤', body, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
+    openModal({ title: '选择方案', body, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
   }
 
   /* ---- 步骤参数配置 ---- */

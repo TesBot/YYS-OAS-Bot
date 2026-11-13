@@ -978,7 +978,7 @@ def list_flow_library():
 def save_flow_template(payload: dict = Body(...)):
     name = (payload.get("name") or "").strip()
     if not name:
-        raise HTTPException(400, "模板名称不能为空")
+        raise HTTPException(400, "方案名称不能为空")
     steps = payload.get("steps")
     if steps is None:
         src = next((f for f in _load_flows() if f.get("id") == payload.get("flow_id")), None)
@@ -1001,7 +1001,7 @@ def delete_flow_template(tpl_id: str):
     templates = _load_flow_library()
     remain = [t for t in templates if t.get("id") != tpl_id]
     if len(remain) == len(templates):
-        raise HTTPException(404, "模板不存在")
+        raise HTTPException(404, "方案不存在")
     _save_flow_library(remain)
     return {"ok": True}
 
