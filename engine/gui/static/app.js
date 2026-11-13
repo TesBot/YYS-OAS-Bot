@@ -902,7 +902,6 @@
   /* ---- 编排 CRUD ---- */
   function openNewFlowDrawer(account) {
     const nameInput = el('input', { class: 'input', placeholder: '如：日常一条龙 / 双开御魂' });
-    const list = el('div', { class: 'tpl-list' });
     const ordered = state.instances.slice().sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
     let accounts = [account || (ordered.length ? ordered[0].name : '')].filter(Boolean);
     const chips = el('div', { class: 'chips' });
@@ -921,29 +920,17 @@
     }
     paintChips();
 
-    (state.catalog ? state.catalog.flow_templates : []).forEach((tpl) => {
-      const card = el('div', { class: 'task-card' },
-        el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: tpl.name }),
-          el('span', { class: 'badge ' + (tpl.accounts > 1 ? 'badge-gold' : 'badge-dim'), text: tpl.accounts > 1 ? '双账号联动' : '单账号' })),
-        el('div', { class: 'tc-desc', text: tpl.desc }),
-        el('div', { class: 'tc-ops' }, btn('用此模板', 'bolt', () => createFromTemplate(tpl, accounts, nameInput.value), 'sm')),
-      );
-      list.appendChild(card);
-    });
-
     openDrawer({
       kicker: '任务编排',
       title: '新建编排表',
       body: el('div', {},
         field('编排表名称', nameInput),
         el('div', { class: 'field' }, el('label', { text: '绑定账号（第一个为队长；多开可绑定任意多个）' }), chips),
-        el('p', { class: 'hint', text: '先建一张空表，再逐个添加任务；也可以直接套用下面的模板。绑定多个账号后，组队类玩法可设为联动步骤。' }),
-        el('div', { class: 'section-title mt-14' }, el('h2', { text: '模板' })),
-        list,
+        el('p', { class: 'hint', text: '创建后在编辑页逐个添加任务即可。' }),
       ),
       foot: [
         btn('取消', 'x', closeDrawer, 'ghost'),
-        btn('创建空表', 'plus', async () => {
+        btn('创建', 'plus', async () => {
           const name = nameInput.value.trim() || '未命名编排';
           if (!accounts.length) return toast('请先绑定账号', 'err');
           try {
@@ -964,25 +951,6 @@
     if (!needsTeam || accounts.length < 2) return steps;
     return [{ task: 'team_setup', mode: 'team', enabled: true,
       team: { leader: accounts[0], members: accounts.slice(1) } }].concat(steps);
-  }
-
-  async function createFromTemplate(tpl, accounts, name) {
-    if (!accounts.length) return toast('请先选择账号', 'err');
-    const steps = withTeamStep(tpl.steps.map((s) => ({
-      task: s.task, mode: s.mode === 'duo' ? 'team' : (s.mode || 'solo'),
-      patch: s.patch || {}, enabled: true,
-    })), accounts);
-    try {
-      const r = await api('/api/flows', {
-        method: 'POST',
-        body: { name: name.trim() || tpl.name, accounts, steps },
-      });
-      state.flowId = r.flow.id;
-      await loadFlows();
-      closeDrawer();
-      go('flows');
-      toast('已按模板创建', 'ok');
-    } catch (e) { toast('创建失败：' + e.message, 'err'); }
   }
 
   function openFlowBindDrawer(flow) {
@@ -1844,14 +1812,19 @@
     const issues = (state.catalog && state.catalog.issues) || [];
     const order = { error: 0, warn: 1, info: 2 };
     issues.slice().sort((a, b) => (order[a.severity] || 9) - (order[b.severity] || 9)).forEach((it) => {
-      root.appendChild(el('div', { class: 'issue ' + it.severity },
+      const card = el('div', { class: 'issue ' + it.severity },
         el('h4', {}, it.title,
           el('span', { class: 'badge ' + (it.severity === 'error' ? 'badge-err' : it.severity === 'warn' ? 'badge-warn' : 'badge-accent'),
             text: it.severity === 'error' ? '会导致失败' : it.severity === 'warn' ? '需要注意' : '说明' })),
         el('div', { class: 'scope', text: it.scope }),
         el('p', { text: it.detail }),
         el('div', { class: 'fix', text: '处理：' + it.fix }),
-      ));
+      );
+      if (it.image) {
+        card.appendChild(el('div', { class: 'issue-img' },
+          el('img', { src: '/static/' + it.image, alt: it.title })));
+      }
+      root.appendChild(card);
     });
   }
 

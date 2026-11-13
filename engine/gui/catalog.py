@@ -567,6 +567,15 @@ FIELD_HINTS: list[tuple[str, str]] = [
 
 KNOWN_ISSUES: list[dict] = [
     {
+        "id": "explore-entrances",
+        "severity": "warn",
+        "title": "探索页底部入口要全部展开",
+        "scope": "地域鬼王/御灵/六道之门/契灵之境等从探索页进入的任务",
+        "detail": "探索页底部的功能入口如果被收进右侧「折叠」区，图标不在默认位置，任务会因找不到入口而失败或反复重试。",
+        "fix": "长按折叠区里的入口图标，拖到左侧底部一排全部展开（见示例图），完成后点「保存」。",
+        "image": "assets/explore-entrances.png",
+    },
+    {
         "id": "costume-main-type",
         "severity": "warn",
         "title": "庭院皮肤设置",
