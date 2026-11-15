@@ -311,6 +311,18 @@ function registerAppProtocol() {
       const data = await fs.promises.readFile(file);
       return new Response(data, { headers: { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' } });
     } catch (err) {
+      // 已知问题示例图只在 engine/gui/static/assets/ 维护一份；renderer 没复制到时回退，避免裂图。
+      if (rel.startsWith('assets/')) {
+        const engineDir = activeEngineDir();
+        const staticRoot = engineDir ? path.normalize(path.join(engineDir, 'gui', 'static')) : null;
+        const fallback = staticRoot ? path.normalize(path.join(staticRoot, rel)) : null;
+        if (fallback && fallback.startsWith(staticRoot)) {
+          try {
+            const data = await fs.promises.readFile(fallback);
+            return new Response(data, { headers: { 'content-type': MIME[path.extname(fallback).toLowerCase()] || 'application/octet-stream' } });
+          } catch { /* 下面统一记 404 */ }
+        }
+      }
       protoLog(`STATIC-ERR ${file} :: ${err && err.message}`);
       return new Response('Not Found', { status: 404 });
     }
@@ -557,6 +569,7 @@ protocol.registerSchemesAsPrivileged([
 
 app.whenReady().then(async () => {
   if (!singleInstance) return; // 已有实例在跑，本进程立刻退出
+  resetSession(); // 每次启动都是干净会话：账号需重新绑定，任务模板保留
   registerAppProtocol();
   buildMenu();
 
@@ -661,10 +674,33 @@ function sweepInstallDir() {
   } catch { /* 尽力而为 */ }
 }
 
+// 干净会话：账号绑定与每个号的任务设置归零，但编排表 / 自定义方案库 /
+// 账号资料（含组队用的游戏昵称）长期保留 —— 任务是通用模板，不跟某个号走。
+// 启动时和退出时各执行一次，异常退出后下次启动依然是干净的。
+function resetSession() {
+  try {
+    const dir = activeEngineDir();
+    if (!dir) return;
+    const cfgDir = path.join(dir, 'config');
+    if (!fs.existsSync(cfgDir)) return;
+    const isInstance = (f) => f.endsWith('.json')
+      && f !== 'template.json' && !f.startsWith('gui_')
+      && !f.endsWith('.json.bak') && !f.endsWith('.json.tmp');
+    for (const f of fs.readdirSync(cfgDir)) {
+      if (!isInstance(f)) continue;
+      const base = f.slice(0, -5);
+      for (const suffix of ['.json', '.json.bak', '.json.tmp']) {
+        try { fs.unlinkSync(path.join(cfgDir, base + suffix)); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+}
+
 let quitting = false;
 function beginQuit() {
   if (quitting) return;
   quitting = true;
+  resetSession();
   stopBridge();
   const sweep = setTimeout(sweepInstallDir, 1200);
   const hard = setTimeout(() => {

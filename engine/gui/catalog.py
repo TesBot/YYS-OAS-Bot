@@ -151,7 +151,17 @@ TEAM_SETUP = {
     "desc": "指定队长与队员。放在刷本任务之前，后面的组队玩法就按这支队伍执行。",
     "team": False,
 }
-PSEUDO_TASKS = [TEAM_SETUP]
+# 「自定义点击」同样是控制台伪任务：引擎侧没有这个玩法，由 gui/ 下的执行器
+# 直接复用引擎 Device/OCR/拟人点击能力完成，配置不写进实例 config 的任务段。
+CUSTOM_CLICK_KEY = "custom_click"
+CUSTOM_CLICK = {
+    "key": CUSTOM_CLICK_KEY,
+    "name": "自定义点击",
+    "category": "自定义操作",
+    "desc": "OCR 判定 → 框选点击 → 延时，逐层执行；自动接管战斗。",
+    "team": False,
+}
+PSEUDO_TASKS = [TEAM_SETUP, CUSTOM_CLICK]
 
 # 编排表行内摘要优先展示的字段（按优先级取到 3 个）
 SUMMARY_KEYS = [
@@ -538,8 +548,13 @@ FIELD_HINTS: list[tuple[str, str]] = [
     ("scheduler.priority", "数值越小越先执行，多个任务同时到期时用于排序。"),
     ("scheduler.success_interval", "成功后的间隔，格式 `DD HH:MM:SS`。"),
     ("scheduler.failure_interval", "失败后的重试间隔，格式 `DD HH:MM:SS`。"),
-    ("limit_time", "任务最长运行时间，到达后安全收尾并尽量回庭院。"),
-    ("limit_count", "最多挑战次数。第一次验证流程时建议设 1。"),
+    ("limit_time", "任务最长运行时间，到达后安全收尾并尽量回庭院。"
+                   "注意：次数限制与时间限制谁先到谁生效——只调大次数、不改时间，仍会按时间提前结束。"),
+    ("limit_count", "最多挑战次数。第一次验证流程时建议设 1。"
+                    "注意：与「时间限制」是双上限，取先到者；想刷满次数请把时间限制同步放大。"),
+    ("check_enable", "任务开始时检查契忆数量，达到上限就直接结束任务。"
+                     "契灵之境请改「契灵之境设置」里的这一项，界面上若还有旧的「bondling_check」段，那是无效的历史字段。"),
+    ("limit_num", "契忆数量上限，仅在任务开始时判断一次。"),
     ("user_status", "双账号联动的关键：队长负责建房邀请，队员负责接受邀请。"
                     "在编排表里把两个账号绑到同一步，UI 会自动分别设为队长/队员。"),
     ("preset_enable", "出战准备界面自动点「预设」并应用指定组/队。游戏只允许在准备界面应用预设。"),
@@ -600,71 +615,6 @@ KNOWN_ISSUES: list[dict] = [
         "fix": "请在游戏内关闭自定义战斗主题，并将式神录的幕间主题恢复默认后再试。",
     },
 ]
-
-# ─────────────────────────── 编排模板 ───────────────────────────
-
-# patch 结构：{任务段名: {字段: 值}}，按步骤顺序生成
-FLOW_TEMPLATES: list[dict] = [
-    {
-        "id": "daily-main",
-        "name": "日常一条龙",
-        "desc": "签到 → 悬赏 → 宠物 → 委派 → 花合战 → 御魂整理，适合每天早上挂一遍。",
-        "accounts": 1,
-        "steps": [
-            {"task": "daily_trifles"},
-            {"task": "wanted_quests"},
-            {"task": "pets"},
-            {"task": "delegation"},
-            {"task": "talisman_pass"},
-            {"task": "souls_tidy"},
-        ],
-    },
-    {
-        "id": "farm-orochi",
-        "name": "御魂 30 次",
-        "desc": "八岐大蛇 30 次 + 应用预设第 1 组第 1 队。",
-        "accounts": 1,
-        "steps": [
-            {"task": "orochi", "patch": {"orochi_config": {"limit_count": 30},
-                                         "general_battle_config": {"preset_enable": True,
-                                                                   "preset_group": 1,
-                                                                   "preset_team": 1}}},
-        ],
-    },
-    {
-        "id": "duo-evo",
-        "name": "双人觉醒 30 次",
-        "desc": "主号做队长建房、小号接受邀请，配置在步骤上统一设置，两端自动同步层数。",
-        "accounts": 2,
-        "steps": [
-            {"task": "evo_zone", "mode": "duo",
-             "patch": {"evo_zone_config": {"kirin_type": "火麒麟", "layer": "壹层", "limit_count": 30}}},
-        ],
-    },
-    {
-        "id": "duo-orochi",
-        "name": "双人御魂 50 次",
-        "desc": "队长/队员自动分工，适合两个账号互相带。",
-        "accounts": 2,
-        "steps": [
-            {"task": "orochi", "mode": "duo",
-             "patch": {"orochi_config": {"limit_count": 50},
-                       "general_battle_config": {"preset_enable": True, "preset_group": 1,
-                                                 "preset_team": 1}}},
-        ],
-    },
-    {
-        "id": "evening-boss",
-        "name": "晚间鬼王",
-        "desc": "逢魔之时 + 地域鬼王 3 只，20:00 之后执行。",
-        "accounts": 1,
-        "steps": [
-            {"task": "demon_encounter"},
-            {"task": "area_boss", "patch": {"boss": {"boss_number": 3, "boss_reward": False}}},
-        ],
-    },
-]
-
 
 def task_display(key: str) -> tuple[str, str]:
     """返回 (中文名, 分类)；旧分类名经 CATEGORY_ALIAS 归并到新分类；未知任务回退到原始键名。"""

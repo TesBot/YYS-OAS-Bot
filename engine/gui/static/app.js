@@ -56,6 +56,7 @@
     bolt: '<path d="M13 2L4 14h6l-1 8 9-12h-6z"/>',
     drag: '<circle cx="9" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="17" r="1.2"/><circle cx="15" cy="17" r="1.2"/>',
     copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+    moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
     phone: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/>',
   };
   const icon = (name, size) => `<svg viewBox="0 0 24 24" width="${size || 16}" height="${size || 16}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
@@ -92,6 +93,7 @@
     devices: [],
     flows: [],
     flowLib: [],
+    customPlans: [],
     jobs: [],
     runs: [],
     flowId: null,
@@ -107,6 +109,57 @@
   };
   const instOf = (name) => state.instances.find((i) => i.name === name) || null;
   const currentFlow = () => state.flows.find((f) => f.id === state.flowId) || null;
+
+  /* ---------------- 编排循环 ----------------
+     loop 存在编排表上，启动时弹窗可临时覆盖并「记住为默认」。
+     once=跑一遍 / count=重复 N 轮 / forever=一直循环直到手动停止。 */
+  const normalizeLoop = (raw) => {
+    const d = raw && typeof raw === 'object' ? raw : {};
+    const mode = ['once', 'count', 'forever'].includes(d.mode) ? d.mode : 'once';
+    let count = null;
+    if (mode === 'once') count = 1;
+    else if (mode === 'count') count = Math.max(2, Math.min(parseInt(d.count, 10) || 2, 999));
+    const iv = (d.interval === undefined || d.interval === null || d.interval === '')
+      ? 3 : parseInt(d.interval, 10);
+    return {
+      mode, count,
+      on_error: d.on_error === 'continue' ? 'continue' : 'stop',
+      interval: Number.isFinite(iv) ? Math.max(0, Math.min(iv, 300)) : 3,
+    };
+  };
+  const loopLabel = (raw) => {
+    const l = normalizeLoop(raw);
+    return l.mode === 'forever' ? '一直循环'
+      : l.mode === 'count' ? `循环 ${l.count} 轮` : '仅一次';
+  };
+  const loopRound = (job) => {
+    if (!job || !job.round) return '';
+    if (job.infinite) return `第 ${job.round} 轮 · 一直循环`;
+    const total = job.total_rounds || 1;
+    return total > 1 ? `第 ${job.round}/${total} 轮` : `第 ${job.round} 轮`;
+  };
+
+  /* 随机发呆：编排级配置，运行时注入自定义点击方案，不写进方案库。 */
+  const normalizeIdle = (raw) => {
+    const d = raw && typeof raw === 'object' ? raw : {};
+    const sec = (v, def) => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(n, 600)) : def;
+    };
+    let lo = sec(d.min, 2), hi = sec(d.max, 6);
+    if (hi < lo) { const t = lo; lo = hi; hi = t; }
+    const p = parseFloat(d.probability);
+    return {
+      enable: d.enable === true,
+      min: Math.round(lo * 10) / 10,
+      max: Math.round(hi * 10) / 10,
+      probability: Number.isFinite(p) ? Math.max(0, Math.min(p, 1)) : 0.15,
+    };
+  };
+  const idleLabel = (raw) => {
+    const d = normalizeIdle(raw);
+    return d.enable ? `随机发呆 ${Math.round(d.probability * 100)}% · ${d.min}~${d.max}s` : '随机发呆 关';
+  };
 
   /* ---------------- 导航 ---------------- */
   const VIEWS = [
@@ -222,8 +275,20 @@
     state.runs = data.runs || [];
   }
 
+  async function loadVersion() {
+    try {
+      const v = await api('/api/version');
+      const node = $('#appVersion');
+      if (node) node.textContent = `v${v.version || '?'} · ${v.build || 'release'}`;
+    } catch (e) {
+      const node = $('#appVersion');
+      if (node) node.textContent = '版本未知（桥接未连接）';
+    }
+  }
+
   async function refreshAll() {
-    await Promise.all([loadCatalog(), loadInstances(), loadFlows(), loadFlowLib(), loadJobs(), loadRuns()]);
+    await Promise.all([loadVersion(), loadCatalog(), loadInstances(), loadFlows(),
+      loadFlowLib(), loadCustomPlans(), loadJobs(), loadRuns()]);
     await loadDevices();
     render();
   }
@@ -371,7 +436,7 @@
     const last = state.instances.length <= 1;
     const tip = last
       ? `确定解绑账号 ${name}？\n这是最后一个账号，解绑后总览会变成空态，随时可以重新绑定。`
-      : `确定解绑账号 ${name}？\n配置会被删除（.bak 备份保留），编排表里的引用会一并摘掉。`;
+      : `确定解绑账号 ${name}？\n配置将被删除且不保留备份，编排表里的引用会一并摘掉。`;
     if (!confirm(tip)) return;
     try {
       const r = await api(`/api/instances/${name}`, { method: 'DELETE' });
@@ -523,7 +588,12 @@
      一个账号可以有多份编排，左栏逐份列出、点哪份看哪份；每份编排自带一个
      执行按钮。同一账号同一时间只能跑一份，所以有编排在跑时，同账号下其它
      编排的执行按钮直接锁住（后端 run_flow 也会挡，见 gui/bridge.py）。     */
-  const flowOwner = (flow) => ((flow.accounts && flow.accounts[0]) || '');
+  // 编排归组跟随「实际队长」：有自定义组队时以显式队长为准，否则才是第一个账号。
+  const flowOwner = (flow) => {
+    const ts = (flow.steps || []).find((s) => s.task === 'team_setup' && s.team && s.team.leader);
+    return (ts && ts.team.leader && (flow.accounts || []).includes(ts.team.leader))
+      ? ts.team.leader : ((flow.accounts && flow.accounts[0]) || '');
+  };
   const runningJobOf = (flowId) => state.jobs.find(
     (j) => j.flow_id === flowId && j.status === 'running') || null;
 
@@ -557,11 +627,15 @@
     if (!state.flowId && state.flows.length) state.flowId = state.flows[0].id;
 
     // 按「首个账号」分组：多账号联动的编排归到队长名下，避免同一份出现两次。
+    const known = new Set(state.instances.map((i) => i.name));
     const groups = new Map(state.instances.map((inst) => [inst.name, []]));
     state.flows.forEach((flow) => {
+      // 账号每次启动都要重新绑定；引用了「当前不存在账号」的编排归入任务库，
+      // 不能让它凭空消失，任务是通用模板。
       const owner = flowOwner(flow);
-      if (!groups.has(owner)) groups.set(owner, []);
-      groups.get(owner).push(flow);
+      const key = known.has(owner) ? owner : '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(flow);
     });
 
     const layout = el('div', { class: 'fl-layout' });
@@ -577,7 +651,9 @@
     if (orphans.length) {
       const group = el('div', { class: 'fl-group' });
       group.appendChild(el('div', { class: 'fl-group-head' },
-        el('strong', { class: 'grow', text: '未绑定账号' })));
+        el('strong', { class: 'grow', text: '任务库（未绑定账号）' })));
+      group.appendChild(el('div', { class: 'fl-none',
+        text: '这些是通用任务模板：先绑定账号，再用编排的「改绑定」挂到任意账号。' }));
       orphans.forEach((flow) => group.appendChild(flowItem(flow)));
       side.appendChild(group);
     }
@@ -590,8 +666,10 @@
     state.flowsSignature = runningSignature();
   }
 
+  // 带上轮次：循环作业每进入新一轮时重绘一次，标题上的「第 N 轮」才会跟着走
   const runningSignature = () => state.jobs
-    .filter((j) => j.status === 'running').map((j) => j.id).sort().join(',');
+    .filter((j) => j.status === 'running')
+    .map((j) => `${j.id}:${j.round || 0}`).sort().join(',');
 
   function flowGroup(inst, flows) {
     const group = el('div', { class: 'fl-group' });
@@ -619,7 +697,11 @@
     const locked = !running && flowLocked(flow);
     const meta = [`${flow.steps.length} 步`];
     if (flow.accounts.length > 1) meta.push(`${flow.accounts.length} 账号联动`);
-    if (running) meta.push('执行中');
+    const lp = loopLabel(flow.loop);
+    if (lp !== '仅一次') meta.push(lp);
+    const idl = normalizeIdle(flow.idle);
+    if (idl.enable) meta.push(`发呆 ${Math.round(idl.probability * 100)}%`);
+    if (running) meta.push(loopRound(job) || '执行中');
 
     const item = el('div', {
       class: 'fl-item' + (state.flowId === flow.id ? ' active' : '') + (running ? ' running' : ''),
@@ -631,7 +713,8 @@
 
     const act = el('button', {
       class: 'fl-run' + (running ? ' stop' : ''),
-      title: running ? '停止执行' : (locked ? '该账号正在执行其它编排' : '执行这份编排'),
+      title: running ? '停止执行' : (locked ? '该账号正在执行其它编排'
+        : `按「${loopLabel(flow.loop)}」执行（在「循环设置」里改）`),
       'data-act': running ? 'stopJob' : 'runFlow',
       'data-id': running ? job.id : flow.id,
       html: icon(running ? 'x' : 'play', 12) + `<span>${running ? '停止' : '执行'}</span>`,
@@ -661,8 +744,16 @@
       el('span', { class: 'badge ' + (flow.accounts.length > 1 ? 'badge-gold' : 'badge-dim'),
         text: flow.accounts.length > 1 ? `${flow.accounts.length} 账号联动` : '单账号' }),
       el('span', { class: 'badge badge-dim', text: `${flow.steps.length} 步` }),
+      el('span', { class: 'badge ' + (normalizeLoop(flow.loop).mode === 'once' ? 'badge-dim' : 'badge-gold'),
+        text: loopLabel(flow.loop) }),
+      el('span', { class: 'badge ' + (normalizeIdle(flow.idle).enable ? 'badge-gold' : 'badge-dim'),
+        text: idleLabel(flow.idle) }),
     ));
     head.appendChild(el('div', { class: 'row' },
+      btn(job ? '停止执行' : '执行', job ? 'x' : 'play',
+        job ? () => stopJob(job.id) : () => runFlow(flow), job ? 'danger' : 'primary'),
+      btn('随机发呆', 'moon', () => openIdleDrawer(flow), 'ghost'),
+      btn('循环设置', 'refresh', () => openLoopDrawer(flow), 'ghost'),
       btn('改绑定', 'cog', () => openFlowBindDrawer(flow), 'ghost'),
       btn('重命名', 'sliders', () => renameFlow(flow), 'ghost'),
       btn('存为自定义方案', 'copy', () => saveFlowAsTemplate(flow), 'ghost'),
@@ -681,7 +772,7 @@
       bar.appendChild(el('div', { class: 'panel-head' },
         el('h3', {}, '正在执行 ', statusBadge(job.status)),
         el('div', { class: 'row' },
-          el('span', { class: 'sub', text: `${done}/${job.steps.length} 步 · ${(job.started || '').replace('T', ' ')}` }),
+          el('span', { class: 'sub', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 步 · ${(job.started || '').replace('T', ' ')}` }),
           btn('停止', 'x', () => stopJob(job.id), 'danger'),
         ),
       ));
@@ -712,9 +803,9 @@
       detail.appendChild(el('div', { class: 'panel', style: 'margin-top:18px' },
         el('div', { class: 'panel-head' }, el('h3', { text: '组队联动说明' })),
         el('div', { class: 'panel-body' },
-          el('p', { class: 'small muted', text: '联动分两步：先插入一条「自定义组队」指定队长与队员（队长不必是第一个账号），再把带「可联动」标记的玩法设为「组队执行」，它会沿用这支队伍。' }),
-          el('p', { class: 'small muted mt-8', text: '执行时队长写入 user_status=leader，队员写入 member，所有进程并行启动；队长建房邀请，队员接受邀请。' }),
-          el('p', { class: 'small muted mt-8', text: '前提：账号之间互为好友或同寮，队员端启动时停在庭院。当前已实测 2 人；3 人及以上沿用 1 队长 + N 队员机制，邀请时序尚未验证。' }),
+          el('p', { class: 'small muted', text: '联动分两步：先插入一条「自定义组队」指定队长与队员（队长不必是第一个账号，编排会归到队长名下），再把带「可联动」标记的玩法设为「组队执行」。' }),
+          el('p', { class: 'small muted mt-8', text: '执行时队长写入 user_status=leader、队员写入 member；同时把队员的「游戏内昵称」自动回填到队长 invite_config.friend_1/2，队长按昵称在好友列表里 OCR 精确匹配后发出邀请。' }),
+          el('p', { class: 'small muted mt-8', text: '前提：两账号互为好友或同寮、队员在线且启动前停在庭院，绑定资料里的「游戏内昵称」必须填游戏内全称。引擎最多邀请 2 名队员，3 人及以上暂不支持。' }),
         ),
       ));
     }
@@ -739,7 +830,7 @@
       step.mode === 'team' ? el('span', { class: 'badge badge-gold', text: '组队联动' }) : null,
       (step.mode !== 'team' && step.account && (flow.accounts || []).length > 1)
         ? el('span', { class: 'badge badge-accent', text: instName(step.account) }) : null,
-      stepState ? statusBadge(stepState) : null,
+      stepState ? (() => { const b = statusBadge(stepState); b.setAttribute('data-status', '1'); return b; })() : null,
     );
 
     const line2 = el('div', { class: 'step-line2' });
@@ -766,7 +857,12 @@
     row.appendChild(el('div', { class: 'step-ops' },
       el('button', { class: 'icon-btn', title: '上移', 'data-act': 'stepUp', 'data-id': step.id, html: icon('up', 13) }),
       el('button', { class: 'icon-btn', title: '下移', 'data-act': 'stepDown', 'data-id': step.id, html: icon('down', 13) }),
-      el('button', { class: 'icon-btn', title: '配置参数', 'data-act': 'stepConfig', 'data-id': step.id, html: icon('cog', 13) }),
+      step.task === 'custom_click'
+        ? el('button', { class: 'icon-btn', title: '更换方案', 'data-act': 'customClickSwap', 'data-id': step.id, html: icon('copy', 13) })
+        : null,
+      el('button', { class: 'icon-btn', title: step.task === 'custom_click' ? '编辑自定义点击方案' : '配置参数',
+        'data-act': step.task === 'custom_click' ? 'customClickConfig' : 'stepConfig',
+        'data-id': step.id, html: icon('cog', 13) }),
       el('button', { class: 'icon-btn', title: '删除', 'data-act': 'stepDelete', 'data-id': step.id, html: icon('trash', 13) }),
     ));
     return row;
@@ -886,6 +982,11 @@
   }
 
   function stepSummary(flow, step) {
+    if (step.task === 'custom_click') {
+      const p = state.customPlans.find((x) => x.id === step.plan_id);
+      return p ? [`方案 ${p.name}`, `${p.steps.length} 层 · 超时 ${p.timeout}s`]
+        : ['方案已删除，请点齿轮重新选择'];
+    }
     const patch = step.patch || {};
     const acct = (step.account || flow.accounts[0]) || '';
     const inst = instOf(acct);
@@ -906,6 +1007,347 @@
 
   function labelOf(key) {
     return { layer: '层', kirin_type: '属性', limit_count: '次数', boss_number: '鬼王', challenge_count: '次数' }[key] || key;
+  }
+
+  /* ---------------- 自定义点击 ----------------
+     控制台伪任务：方案存在 gui_custom_clicks.json，编排步骤只引用 plan_id。
+     执行器 engine/gui/custom_click_runner.py 复用引擎 OCR + 矩形内拟人点击 + 随机延时。 */
+  const CC_FULL = [0, 0, 1280, 720];
+  // 内置参数：不暴露到 UI，保存时仍按后端字段写入，执行期照旧走引擎拟人化
+  const CC_POLL = [0.3, 0.8];      // OCR 轮询间隔（秒，浮动）
+  const CC_BEFORE = [0.2, 0.8];    // 点击前浮动延时（秒）
+  const CC_DELAY = 1.0;            // 点击后延时基准（秒），保存时按 ±20% 展开
+  const ccLines = (s) => String(s || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  const ccNum = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+  const smallBtn = (label, ico, fn, kind) => {
+    const b = btn(label, ico, fn, kind); b.classList.add('btn-sm'); return b;
+  };
+  // 层级内循环：once 单次 / count 指定次数 / forever 手动停止；gap 为两轮间隔秒数
+  function ccRepeat(raw) {
+    const r = (raw && typeof raw === 'object') ? raw : {};
+    const mode = ['once', 'count', 'forever'].includes(r.mode) ? r.mode : 'once';
+    return {
+      mode,
+      count: Math.max(1, Math.min(parseInt(r.count, 10) || 2, 999)),
+      gap: Math.max(0, Math.min(ccNum(r.gap, 1), 300)),
+      recheck: r.recheck !== false,
+    };
+  }
+  function newCCStep(i) {
+    return {
+      id: 'cs' + Math.random().toString(36).slice(2, 8), name: `第 ${i + 1} 层`,
+      texts: [], forbid: [], match: 'all', ocr_roi: CC_FULL.slice(),
+      rect: [400, 250, 880, 520], score: 0.6,
+      delay_before: CC_BEFORE.slice(), delay_after: [0.8, 1.2], delay: CC_DELAY,
+      repeat: ccRepeat(null), jump: 0,
+    };
+  }
+  function newCCPlan() {
+    return { id: null, name: '新方案', timeout: 30, poll: CC_POLL.slice(),
+      battle: true, steps: [newCCStep(0)], updated: '' };
+  }
+  function ccDraft(raw) {
+    const p = raw ? JSON.parse(JSON.stringify(raw)) : newCCPlan();
+    p.timeout = Math.max(1, Math.round(ccNum(p.timeout, 30)));
+    p.poll = CC_POLL.slice();  // 轮询间隔内置，旧方案一并归一
+    p.battle = p.battle !== false;  // 旧方案默认开启全局战斗接管
+    p.steps = (p.steps || []).map((s, i) => {
+      const after = (s.delay_after && s.delay_after.length === 2)
+        ? s.delay_after.map((n) => ccNum(n, CC_DELAY)) : [0.8, 1.2];
+      const step = Object.assign(newCCStep(i), s, {
+        forbid: [], ocr_roi: CC_FULL.slice(), rect: (s.rect || CC_FULL).slice(),
+        delay_before: CC_BEFORE.slice(), delay_after: after.slice(),
+        delay: Math.round(ccNum(s.delay, (after[0] + after[1]) / 2) * 10) / 10,
+        texts: s.texts || [], repeat: ccRepeat(s.repeat),
+        jump: Math.max(0, parseInt(s.jump, 10) || 0),
+      });
+      delete step.__image;  // 截图只属于编辑期
+      delete step.__inst;
+      return step;
+    });
+    if (!p.steps.length) p.steps = [newCCStep(0)];
+    p.steps.forEach((s) => { if (s.jump > p.steps.length) s.jump = 0; });
+    return p;
+  }
+  // 保存前剔除编辑期截图与 UI 专用的 delay 单值，补回后端需要的固定字段。
+  function ccPayload(draft) {
+    return Object.assign({}, draft, {
+      poll: CC_POLL.slice(),
+      steps: draft.steps.map((s) => {
+        const d = Math.max(0, Math.min(60, ccNum(s.delay, CC_DELAY)));
+        const step = Object.assign({}, s, {
+          forbid: [], ocr_roi: CC_FULL.slice(), delay_before: CC_BEFORE.slice(),
+          delay_after: [Math.round(d * 0.8 * 100) / 100, Math.round(d * 1.2 * 100) / 100],
+          repeat: ccRepeat(s.repeat),
+          jump: Math.max(0, Math.min(parseInt(s.jump, 10) || 0, draft.steps.length)),
+        });
+        delete step.__image;
+        delete step.__inst;
+        delete step.delay;
+        return step;
+      }),
+    });
+  }
+
+  async function loadCustomPlans() {
+    try {
+      const data = await api('/api/custom-clicks');
+      state.customPlans = data.plans || [];
+    } catch (e) { state.customPlans = []; }  // 旧版 bridge 没有该接口时不影响其它页面
+  }
+
+  async function addCCStepToFlow(plan) {
+    const flow = currentFlow();
+    if (!flow) return toast('请先选中一份编排', 'err');
+    flow.steps = flow.steps.concat([{
+      task: 'custom_click', mode: 'solo', enabled: true, patch: {}, note: '',
+      account: null, participants: [], team: {},
+      plan_id: plan.id, plan_name: plan.name,
+    }]);
+    await saveFlow(flow, true);
+  }
+
+  function openCustomClickLibrary(opts) {
+    const forStep = opts && opts.forStep;
+    const body = el('div');
+    const list = el('div', { class: 'grid grid-2', style: 'margin-top:10px' });
+    function paint() {
+      list.innerHTML = '';
+      if (!state.customPlans.length) {
+        list.appendChild(el('div', { class: 'empty', style: 'grid-column:1/-1' },
+          el('strong', { text: '还没有方案' }), el('p', { text: '点右下角「新建方案」开始配置。' })));
+      }
+      state.customPlans.forEach((p) => {
+        const ops = el('div', { class: 'tc-ops' });
+        if (forStep) {
+          ops.appendChild(smallBtn('选用', 'check', async () => {
+            const flow = currentFlow();
+            const s = flow && flow.steps.find((x) => x.id === forStep);
+            if (!s) return;
+            s.plan_id = p.id; s.plan_name = p.name;
+            await saveFlow(flow, true);
+            closeDrawer(); render(); toast('已切换方案', 'ok');
+          }, 'primary'));
+        } else {
+          ops.appendChild(smallBtn('加到编排', 'plus', async () => {
+            try { await addCCStepToFlow(p); closeDrawer(); toast('已加入编排', 'ok'); }
+            catch (e) { toast('添加失败：' + e.message, 'err'); }
+          }, 'primary'));
+        }
+        ops.appendChild(smallBtn('编辑', 'cog', () => openCustomClickEditor(p.id, false), 'ghost'));
+        ops.appendChild(smallBtn('复制', 'copy', async () => {
+          try { await api(`/api/custom-clicks/${p.id}/duplicate`, { method: 'POST' }); await loadCustomPlans(); paint(); }
+          catch (e) { toast('复制失败：' + e.message, 'err'); }
+        }, 'ghost'));
+        ops.appendChild(smallBtn('删除', 'trash', async () => {
+          if (!confirm(`删除方案「${p.name}」？`)) return;
+          try { await api(`/api/custom-clicks/${p.id}`, { method: 'DELETE' }); await loadCustomPlans(); paint(); }
+          catch (e) { toast('删除失败：' + e.message, 'err'); }
+        }, 'danger'));
+        list.appendChild(el('div', { class: 'task-card' },
+          el('div', { class: 'tc-top' },
+            el('span', { class: 'tc-name', text: p.name }),
+            el('span', { class: 'badge badge-dim', text: '方案' })),
+          el('div', { class: 'tc-desc', text: `${p.steps.length} 层 · 超时 ${p.timeout}s` }),
+          ops));
+      });
+    }
+    paint();
+    body.appendChild(list);
+    openDrawer({
+      kicker: '自定义点击', title: forStep ? '更换方案' : '方案库', body,
+      foot: [btn('新建方案', 'plus', () => openCustomClickEditor(null, !forStep), 'primary'),
+        btn('关闭', 'x', closeDrawer, 'ghost')],
+    });
+  }
+
+  function openCustomClickEditor(planId, autoAdd) {
+    const flow = currentFlow();
+    if (!flow) return toast('请先选中一份编排', 'err');
+    const src = state.customPlans.find((p) => p.id === planId);
+    const draft = ccDraft(src);
+    const insts = state.instances.length ? state.instances : [];
+    let lastCapInst = insts.length ? insts[0].name : '';
+    const body = el('div');
+
+    const nameInput = el('input', { class: 'input', value: draft.name });
+    nameInput.addEventListener('input', () => { draft.name = nameInput.value.trim() || '未命名方案'; });
+    const timeoutInput = el('input', { class: 'input', type: 'number', min: '1', max: '3600', value: String(draft.timeout) });
+    timeoutInput.addEventListener('input', () => { draft.timeout = Math.max(1, parseInt(timeoutInput.value, 10) || 30); });
+    body.append(el('div', { class: 'cc-grid' },
+      field('方案名称', nameInput),
+      field('等待超时（秒）', timeoutInput)));
+    const battleChk = el('input', { type: 'checkbox', checked: draft.battle });
+    battleChk.addEventListener('change', () => { draft.battle = battleChk.checked; });
+    body.append(el('label', {
+      class: 'cc-check cc-plan-check',
+      title: '等待文字时检测战斗准备 / 战斗中 / 胜利结算，交给引擎跑完整场战斗，完成后回到本层继续判定',
+    }, battleChk, el('span', { text: '自动接管战斗' })));
+
+    const stepsBox = el('div', { class: 'cc-steps' });
+    body.append(el('div', { class: 'section-title' },
+      el('h2', { text: '层级' }),
+      el('span', { class: 'sub', text: '按顺序执行' })), stepsBox);
+
+    // 每层的大图就是选区画布：抓图后直接在图上拖框，框即点击区域
+    function captureBlock(step) {
+      const instSel = el('select', { class: 'select' });
+      insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
+      if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
+      const capNote = el('span', { class: 'small muted',
+        text: step.__image ? '在图上拖框选出点击区域（可重拖）' : '抓取画面后，在图上拖框选出点击区域' });
+
+      const stage = el('div', { class: 'cc-stage' + (step.__image ? '' : ' empty') });
+      const img = el('img', { class: 'cc-stage-img', src: step.__image || '', alt: '本层画面' });
+      const sel = el('div', { class: 'cc-sel' });
+      const empty = el('div', { class: 'cc-stage-empty', text: '抓取本层画面后，在图上拖框选出点击区域' });
+      img.hidden = !step.__image; empty.hidden = !!step.__image; sel.hidden = !step.__image;
+      stage.append(img, sel, empty);
+
+      const put = (r) => {
+        sel.style.left = (r[0] / 1280 * 100) + '%';
+        sel.style.top = (r[1] / 720 * 100) + '%';
+        sel.style.width = ((r[2] - r[0]) / 1280 * 100) + '%';
+        sel.style.height = ((r[3] - r[1]) / 720 * 100) + '%';
+      };
+      const coord = (e) => {
+        const b = img.getBoundingClientRect();
+        return [Math.max(0, Math.min(1280, Math.round((e.clientX - b.left) * 1280 / b.width))),
+          Math.max(0, Math.min(720, Math.round((e.clientY - b.top) * 720 / b.height)))];
+      };
+      const between = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]),
+        Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+      let origin = null, dragging = false;
+      stage.addEventListener('pointerdown', (e) => {
+        if (!step.__image) return;
+        dragging = true; origin = coord(e);
+        put([origin[0], origin[1], origin[0], origin[1]]);
+        try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        e.preventDefault();
+      });
+      stage.addEventListener('pointermove', (e) => {
+        if (dragging) put(between(origin, coord(e)));
+      });
+      stage.addEventListener('pointerup', (e) => {
+        if (!dragging) return;
+        dragging = false;
+        const r = between(origin, coord(e));
+        if (r[2] - r[0] < 8 || r[3] - r[1] < 8) { put(step.rect); return; }
+        step.rect = r; put(r); capNote.textContent = '点击区域已设定';
+      });
+      put(step.rect);
+
+      const capBtn = smallBtn('抓取本层画面', 'refresh', async () => {
+        if (!instSel.value) return toast('请先绑定模拟器', 'err');
+        capBtn.disabled = true; capNote.textContent = '抓取中…';
+        try {
+          const r = await api(`/api/instances/${encodeURIComponent(instSel.value)}/screenshot`, { method: 'POST' });
+          step.__image = r.image; step.__inst = instSel.value; lastCapInst = instSel.value;
+          img.src = r.image; img.hidden = false; empty.hidden = true; sel.hidden = false;
+          stage.classList.remove('empty');
+          put(step.rect);
+          capNote.textContent = '在图上拖框选出点击区域（可重拖）';
+        } catch (e) { capNote.textContent = '抓取失败：' + e.message; toast('抓取失败：' + e.message, 'err'); }
+        capBtn.disabled = false;
+      }, 'ghost');
+
+      return el('div', { class: 'cc-cap' },
+        el('div', { class: 'row cc-cap-tools' }, instSel, capBtn, capNote), stage);
+    }
+
+    function stepCard(step, i) {
+      const card = el('div', { class: 'panel cc-step' });
+      const nameInp = el('input', { class: 'input cc-name', value: step.name || '' });
+      nameInp.addEventListener('input', () => { step.name = nameInp.value.trim() || `第 ${i + 1} 层`; });
+      const head = el('div', { class: 'cc-step-head' },
+        el('strong', { text: `第 ${i + 1} 层` }), nameInp, el('span', { class: 'grow' }),
+        smallBtn('删除', 'trash', () => { draft.steps.splice(i, 1); paintSteps(); }, 'danger'));
+
+      const textTa = el('textarea', { class: 'textarea', rows: '2', placeholder: '每行一个关键词，例：探索' });
+      textTa.value = (step.texts || []).join('\n');
+      textTa.addEventListener('input', () => { step.texts = ccLines(textTa.value); });
+      const matchSel = el('select', { class: 'select' },
+        el('option', { value: 'all', text: '全部命中' }),
+        el('option', { value: 'any', text: '命中任意' }));
+      matchSel.value = step.match === 'any' ? 'any' : 'all';
+      matchSel.addEventListener('change', () => { step.match = matchSel.value; });
+      const scoreInp = el('input', { class: 'input', type: 'number', min: '0.1', max: '1', step: '0.05', value: String(step.score) });
+      scoreInp.addEventListener('input', () => { step.score = Math.max(0.1, Math.min(1, ccNum(scoreInp.value, 0.6))); });
+      const delayInp = el('input', { class: 'input', type: 'number', min: '0', max: '60', step: '0.1', value: String(step.delay) });
+      delayInp.addEventListener('input', () => { step.delay = Math.max(0, Math.min(60, ccNum(delayInp.value, CC_DELAY))); });
+
+      const rep = step.repeat;
+      const repSel = el('select', { class: 'select' },
+        el('option', { value: 'once', text: '仅一次' }),
+        el('option', { value: 'count', text: '重复 N 次' }),
+        el('option', { value: 'forever', text: '一直循环（手动停止）' }));
+      repSel.value = rep.mode;
+      const countInp = el('input', { class: 'input', type: 'number', min: '1', max: '999', value: String(rep.count) });
+      countInp.addEventListener('input', () => { rep.count = Math.max(1, Math.min(parseInt(countInp.value, 10) || 2, 999)); });
+      const gapInp = el('input', { class: 'input', type: 'number', min: '0', max: '300', step: '0.1', value: String(rep.gap) });
+      gapInp.addEventListener('input', () => { rep.gap = Math.max(0, Math.min(300, ccNum(gapInp.value, 1))); });
+      const recheckChk = el('input', { type: 'checkbox', checked: rep.recheck });
+      recheckChk.addEventListener('change', () => { rep.recheck = recheckChk.checked; });
+      const recheckBox = el('label', { class: 'cc-check' }, recheckChk,
+        el('span', { text: '每轮重新检测文字' }));
+      const countField = field('重复次数', countInp);
+      const paintRep = () => { countField.hidden = repSel.value !== 'count'; };
+      repSel.addEventListener('change', () => { rep.mode = repSel.value; paintRep(); });
+      paintRep();
+
+      // 本层跑完后可跳回任意层（默认不跳转）；目标层号随层数变化自动收敛
+      const jumpSel = el('select', { class: 'select' });
+      jumpSel.appendChild(el('option', { value: '0', text: '不跳转' }));
+      draft.steps.forEach((s, k) => {
+        jumpSel.appendChild(el('option', { value: String(k + 1), text: `第 ${k + 1} 层 · ${s.name || ''}` }));
+      });
+      step.jump = (step.jump >= 1 && step.jump <= draft.steps.length) ? step.jump : 0;
+      jumpSel.value = String(step.jump);
+      jumpSel.addEventListener('change', () => { step.jump = parseInt(jumpSel.value, 10) || 0; });
+
+      card.append(head, el('div', { class: 'panel-body' },
+        captureBlock(step),
+        field('判定文字（每行一条 · 检测到才点击）', textTa),
+        el('div', { class: 'cc-grid cc-grid-3' },
+          field('匹配', matchSel), field('置信度', scoreInp), field('点击后延时（秒）', delayInp)),
+        el('div', { class: 'cc-grid cc-grid-3' },
+          field('本层重复', repSel), countField, field('循环间隔（秒）', gapInp)),
+        recheckBox,
+        field('执行后跳转', jumpSel)));
+      return card;
+    }
+    function paintSteps() {
+      stepsBox.innerHTML = '';
+      draft.steps.forEach((s, i) => stepsBox.appendChild(stepCard(s, i)));
+    }
+    paintSteps();
+    body.appendChild(el('div', { style: 'margin-top:10px' },
+      smallBtn('追加一层', 'plus', () => { draft.steps.push(newCCStep(draft.steps.length)); paintSteps(); }, 'ghost')));
+
+    openDrawer({
+      kicker: '自定义点击', title: src ? `编辑方案 · ${src.name}` : '新建方案', body,
+      foot: [
+        btn('取消', 'x', closeDrawer, 'ghost'),
+        btn('保存方案', 'check', async () => {
+          if (!draft.steps.length) return toast('至少保留一层', 'err');
+          try {
+            const payload = ccPayload(draft);
+            const r = src
+              ? await api(`/api/custom-clicks/${src.id}`, { method: 'PUT', body: payload })
+              : await api('/api/custom-clicks', { method: 'POST', body: payload });
+            await loadCustomPlans();
+            let note = autoAdd ? '方案已保存并加入编排' : '方案已保存';
+            if (autoAdd) {
+              try { await addCCStepToFlow(r.plan); }
+              catch (e) { note = '方案已保存，但加入编排失败：' + e.message; }
+            }
+            closeDrawer();
+            render();
+            toast(note, 'ok');
+          } catch (e) { toast('保存失败：' + e.message, 'err'); }
+        }, 'primary'),
+      ],
+    });
   }
 
   /* ---- 编排 CRUD ---- */
@@ -956,8 +1398,9 @@
           const tpl = tplSelect && state.flowLib.find((t) => t.id === tplSelect.value);
           if (tpl) {
             steps = withTeamStep(tpl.steps.map((s) => ({
-              task: s.task, mode: s.mode === 'team' ? 'team' : 'solo',
+              task: s.task, mode: (s.mode === 'team' || s.mode === 'duo') ? 'team' : 'solo',
               patch: s.patch || {}, note: s.note || '', enabled: s.enabled !== false,
+              plan_id: s.plan_id || null, plan_name: s.plan_name || '',
             })), accounts);
           }
           try {
@@ -1023,7 +1466,11 @@
 
   async function saveFlow(flow, silent) {
     try {
-      const r = await api(`/api/flows/${flow.id}`, { method: 'PUT', body: { name: flow.name, accounts: flow.accounts, steps: flow.steps } });
+      const r = await api(`/api/flows/${flow.id}`, {
+        method: 'PUT',
+        body: { name: flow.name, accounts: flow.accounts, steps: flow.steps,
+          loop: normalizeLoop(flow.loop), idle: normalizeIdle(flow.idle) },
+      });
       await loadFlows();
       if (!silent) { render(); toast('已保存', 'ok'); }
       return r.flow;
@@ -1096,20 +1543,118 @@
     return false;
   }
 
-  async function runFlow(id) {
-    if (!id) return toast('请先选择编排', 'err');
-    const flow = state.flows.find((f) => f.id === id);
-    if (flow && flowLocked(flow)) {
+  /* 循环设置控件：只在编排详情的「循环设置」抽屉里出现；点「执行」不再弹窗。 */
+  function buildLoopControls(preset) {
+    const p = normalizeLoop(preset);
+    const modeSel = el('select', { class: 'select' },
+      el('option', { value: 'once', text: '仅执行一次（跑完一遍就结束）' }),
+      el('option', { value: 'count', text: '循环指定轮数' }),
+      el('option', { value: 'forever', text: '一直循环（手动停止）' }));
+    modeSel.value = p.mode;
+    const countInput = el('input', { class: 'input', type: 'number', min: '2', max: '999',
+      value: String(p.count || 2) });
+    const countField = field('循环轮数', countInput, '整份编排从头到尾算一轮；可设 2–999 轮。');
+    const intervalInput = el('input', { class: 'input', type: 'number', min: '0', max: '300',
+      value: String(p.interval) });
+    const onError = el('input', { type: 'checkbox', checked: p.on_error === 'continue' });
+    const paint = () => { countField.hidden = modeSel.value !== 'count'; };
+    modeSel.addEventListener('change', paint);
+    paint();
+    const node = el('div', {},
+      field('执行方式', modeSel),
+      countField,
+      field('每轮间隔（秒）', intervalInput,
+        '两轮之间留出结算/回庭院的时间，0 表示立刻开始下一轮。'),
+      el('div', { class: 'field' }, el('label', { text: '失败处理' }),
+        el('label', { class: 'switch' }, onError, el('span', { class: 'track' }),
+          el('span', { class: 'small', text: '某轮失败时继续下一轮（默认失败即停止整份编排）' }))),
+    );
+    const read = () => ({
+      mode: modeSel.value,
+      count: parseInt(countInput.value, 10),
+      interval: parseInt(intervalInput.value, 10),
+      on_error: onError.checked ? 'continue' : 'stop',
+    });
+    return { node, read };
+  }
+
+  // 点「执行」直接开跑：循环次数 / 轮间隔 / 失败处理统一在「循环设置」里改，
+  // 保存后即刻生效，不再弹执行确认框。
+  function runFlow(flow) {
+    if (!flow) return toast('请先选择编排', 'err');
+    const id = flow.id;
+    if (flowLocked(flow)) {
       toast('该账号正在执行其它编排', 'warn');
-      await attachRunningJob((j) => j.flow_id === id
-        || (flow && (j.accounts || []).some((a) => flow.accounts.includes(a))));
+      attachRunningJob((j) => j.flow_id === id
+        || (j.accounts || []).some((a) => flow.accounts.includes(a)));
       return;
     }
+    return startFlow(flow, normalizeLoop(flow.loop), false);
+  }
+
+  function openLoopDrawer(flow) {
+    const ctl = buildLoopControls(flow.loop);
+    openDrawer({
+      kicker: '任务编排', title: '循环设置',
+      body: el('div', {},
+        el('p', { class: 'hint', text: '这里设好就生效：点「执行」会直接按下面的方式开跑，不再弹窗确认。'
+          + '「一直循环」只能在运行中手动点「停止」。' }),
+        ctl.node,
+      ),
+      foot: [
+        btn('取消', 'x', closeDrawer, 'ghost'),
+        btn('保存', 'check', async () => {
+          try { await saveFlow(Object.assign({}, flow, { loop: normalizeLoop(ctl.read()) })); }
+          catch (e) { return; }
+          closeDrawer();
+        }, 'primary'),
+      ],
+    });
+  }
+
+  /* 随机发呆：任务执行前后 + 自定义点击每层循环前后，按概率静止不操作。 */
+  function openIdleDrawer(flow) {
+    const p = normalizeIdle(flow.idle);
+    const on = el('input', { type: 'checkbox', checked: p.enable });
+    const num = (v) => el('input', { class: 'input', type: 'number', min: '0', max: '600',
+      step: '0.5', value: String(v) });
+    const minInp = num(p.min), maxInp = num(p.max);
+    const probInp = el('input', { class: 'input', type: 'number', min: '0', max: '100',
+      step: '1', value: String(Math.round(p.probability * 100)) });
+    const body = el('div', {},
+      el('div', { class: 'field' }, el('label', { text: '启用' }),
+        el('label', { class: 'switch' }, on, el('span', { class: 'track' }),
+          el('span', { class: 'small', text: '任务执行前后、自定义点击每层循环前后，随机静止不操作' }))),
+      el('div', { class: 'cc-grid' }, field('最短（秒）', minInp), field('最长（秒）', maxInp)),
+      field('触发概率（%）', probInp, '每个判定点独立计算，0 表示不触发。'),
+    );
+    openDrawer({
+      kicker: '任务编排', title: '随机发呆', body,
+      foot: [
+        btn('取消', 'x', closeDrawer, 'ghost'),
+        btn('保存', 'check', async () => {
+          const idle = normalizeIdle({
+            enable: on.checked, min: minInp.value, max: maxInp.value,
+            probability: (parseFloat(probInp.value) || 0) / 100,
+          });
+          try { await saveFlow(Object.assign({}, flow, { idle })); } catch (e) { return; }
+          closeDrawer();
+        }, 'primary'),
+      ],
+    });
+  }
+
+  async function startFlow(flow, loop, remember) {
+    const id = flow.id;
     try {
-      const r = await api(`/api/flows/${id}/run`, { method: 'POST' });
+      // 先保存默认设置再启动，避免 409/失步时 UI 上还是旧值
+      if (remember) await saveFlow(Object.assign({}, flow, { loop }), true);
+      const r = await api(`/api/flows/${id}/run`, {
+        method: 'POST', body: { loop, idle: normalizeIdle(flow.idle) },
+      });
       state.jobId = r.job.id;
       state.flowId = id;
-      toast('已开始执行', 'ok');
+      toast(loop.mode === 'once' ? '已开始执行' : `已开始执行 · ${loopLabel(loop)}`, 'ok');
       await loadJobs();
       render();
       dockReset(r.job.id);
@@ -1122,7 +1667,7 @@
       if (/正在执行|执行中/.test(e.message || '')) {
         toast(e.message, 'warn');
         await attachRunningJob((j) => j.flow_id === id
-          || (flow && (j.accounts || []).some((a) => flow.accounts.includes(a))));
+          || (j.accounts || []).some((a) => flow.accounts.includes(a)));
         return;
       }
       toast('启动失败：' + e.message, 'err');
@@ -1130,37 +1675,44 @@
   }
 
   let jobTimer = null;
-  function watchJob(jobId) {
-    if (jobTimer) clearInterval(jobTimer);
+  const trackedJobIds = new Set();
+  function watchJobs() {
+    if (jobTimer) return; // 一个轮询器，但跟踪全部运行中作业
     jobTimer = setInterval(async () => {
       try {
-        const job = await api(`/api/jobs/${jobId}`);
-        const idx = state.jobs.findIndex((j) => j.id === jobId);
-        if (idx >= 0) state.jobs[idx] = job; else state.jobs.unshift(job);
-        applyJobStatus(job);
-        dockFollow(job);
-        if (job.status !== 'running') {
+        const { jobs } = await api('/api/jobs');
+        state.jobs = jobs || [];
+        const running = state.jobs.filter((j) => j.status === 'running');
+        running.forEach((job) => { applyJobStatus(job); dockFollow(job); });
+        // 刚结束的作业再收一次尾，确保 RESULT 尾行进入日志
+        state.jobs.filter((j) => j.status !== 'running' && trackedJobIds.has(j.id))
+          .forEach((job) => dockFollow(job));
+        trackedJobIds.clear();
+        running.forEach((j) => trackedJobIds.add(j.id));
+        if (!running.length) {
           clearInterval(jobTimer); jobTimer = null;
-          // 收尾再拉一次，确保 RESULT 尾行都进了面板
-          dockFollow(job);
           await loadRuns();
-          // 跑完就把执行条和步骤上的进度标记一起收掉。
+          if (state.view === 'flows') render();
+        } else if (runningSignature() !== state.flowsSignature) {
+          state.flowsSignature = runningSignature();
           if (state.view === 'flows') render();
         }
       } catch (e) { clearInterval(jobTimer); jobTimer = null; }
     }, 1500);
   }
+  function watchJob(jobId) { trackedJobIds.add(jobId); watchJobs(); }
 
   function applyJobStatus(job) {
-    // 只在运行中把进度刷到步骤上；结束后的状态不再展示，避免留下过期标记。
-    if (state.view !== 'flows' || job.status !== 'running') return;
+    // 多编排并发时，只处理「当前显示这份编排」对应的作业，避免按 idx 串状态。
+    const flow = currentFlow();
+    if (state.view !== 'flows' || !flow || job.flow_id !== flow.id || job.status !== 'running') return;
     $$('.step').forEach((node) => {
       const id = node.dataset.step;
-      const idx = (currentFlow() || { steps: [] }).steps.findIndex((s) => s.id === id);
+      const idx = flow.steps.findIndex((s) => s.id === id);
       if (idx < 0) return;
+      // 清掉本步骤上全部旧标记：render 写入的 + 上一次轮询写入的
+      $$('[data-status]', node).forEach((n) => n.remove());
       const st = job.steps[idx] && job.steps[idx].status;
-      const old = node.querySelector('[data-status]');
-      if (old) old.remove();
       if (st && st !== 'pending') {
         const badge = statusBadge(st);
         badge.setAttribute('data-status', '1');
@@ -1176,7 +1728,11 @@
      ④ 收起后右下角留一个悬浮入口（运行中带状态点），随时点回。 */
   const DOCK_STORE_KEY = 'oas.dock.open';
   const DOCK_H_STORE_KEY = 'oas.dock.h';
-  const dock = { jobId: null, runs: [], lastStepRuns: '', nearBottom: true, lastNote: null };
+  const DOCK_SCROLL_KEY = 'oas.dock.autoscroll';
+  const dock = {
+    jobIds: [], runs: [], lastStepRuns: '', nearBottom: true,
+    lastNote: {}, selected: 'all', autoScroll: true, lastRound: 0,
+  };
 
   // 关键节点 → 中文注释。只挑「扫一眼就该懂」的里程碑，避免刷屏。
   const PAGE_CN = {
@@ -1228,43 +1784,82 @@
     dockPeekUpdate();
   }
 
-  function dockReset(jobId) {
+  function dockReset(jobIds) {
     const log = $('#dockLog');
     if (!log) return;
-    dock.jobId = jobId;
+    dock.jobIds = Array.isArray(jobIds) ? jobIds.slice() : (jobIds ? [jobIds] : []);
     dock.runs = [];
     dock.lastStepRuns = '';
+    dock.lastRound = 0;
     dock.nearBottom = true;
-    dock.lastNote = null;
+    dock.lastNote = {};
+    dock.selected = 'all';
     log.innerHTML = '';
+    dockRenderTabs();
     $('#logDock') && $('#logDock').classList.remove('failed');
     const dot = $('#dockDot'), sub = $('#dockSub');
     if (dot) dot.className = 'dot dot-ok';
     if (sub) sub.textContent = '正在启动引擎…';
   }
 
-  function dockAppend(line, note) {
+  function dockApplyFilter(node) {
+    if (!node) return;
+    // 没有实例归属的全局注释（轮次分隔等）在任何 Tab 下都保留
+    node.hidden = !!(dock.selected !== 'all' && node.dataset.instance
+      && node.dataset.instance !== dock.selected);
+  }
+
+  // 标题处的实例切换：全部 / 每个模拟器实例各一个 Tab
+  function dockRenderTabs() {
+    const box = $('#dockTabs');
+    if (!box) return;
+    const insts = [...new Set(dock.runs.map((r) => r.instance).filter(Boolean))];
+    if (dock.selected !== 'all' && !insts.includes(dock.selected)) dock.selected = 'all';
+    box.innerHTML = '';
+    const mk = (key, label) => box.appendChild(el('button', {
+      class: 'dock-tab' + (dock.selected === key ? ' active' : ''),
+      text: label, type: 'button', 'data-act': 'dockInstance', 'data-id': key,
+    }));
+    mk('all', '全部');
+    insts.forEach((i) => mk(i, instName(i)));
+  }
+
+  function dockSelectInstance(key) {
+    dock.selected = key || 'all';
+    $$('#dockLog > div').forEach(dockApplyFilter);
+    dockRenderTabs();
+    dockScrollAll();
+  }
+
+  function dockAppend(line, note, run) {
     const log = $('#dockLog');
     if (!log) return;
-    // 引擎常把同一事件打印两次（如 Page arrived 成对出现）：
-    // 连续相同的注释只保留一条，原始行照常保留。
-    if (note && note !== dock.lastNote) {
-      log.appendChild(el('div', { class: 'ln-note', text: '▸ ' + note }));
+    const inst = (run && run.instance) || '';
+    // 引擎常把同一事件打印两次；同一 run 内连续相同的注释只保留一条。
+    const noteKey = (run && run.id) || 'all';
+    if (note && dock.lastNote[noteKey] !== note) {
+      const n = el('div', { class: 'ln-note', text: '▸ ' + note });
+      n.dataset.instance = inst;
+      log.appendChild(n);
+      dockApplyFilter(n);
     }
-    dock.lastNote = note;
+    dock.lastNote[noteKey] = note;
     let cls = '';
     if (/ERROR|Traceback|failed|失败/i.test(line)) cls = 'ln-err';
     else if (/WARNING|warn/i.test(line)) cls = 'ln-warn';
     else if (/RESULT: True|SUCCESS/i.test(line)) cls = 'ln-ok';
     else if (/^===/.test(line)) cls = 'ln-head';
-    log.appendChild(el('div', { class: cls, text: line }));
-    // 防爆内存：整场编排最多留 1600 行（含注释行）
-    while (log.childNodes.length > 1600) log.removeChild(log.firstChild);
+    const shown = inst ? `[${instName(inst)}] ${line}` : line;
+    const node = el('div', { class: cls, text: shown });
+    node.dataset.instance = inst;
+    log.appendChild(node);
+    dockApplyFilter(node);
+    while (log.childNodes.length > 2400) log.removeChild(log.firstChild);
   }
 
   function dockScrollAll() {
     const box = $('#dockLog');
-    if (!box || !dock.nearBottom) return;
+    if (!box || !dock.autoScroll || !dock.nearBottom) return;
     box.scrollTop = box.scrollHeight;
   }
 
@@ -1274,13 +1869,16 @@
       const data = await api(`/api/runs/${run.id}?offset=${run.offset}`);
       const lines = data.lines || [];
       run.offset += lines.length;
+      run.instance = data.instance || run.instance || '';
       run.label = `${instName(data.instance)} · ${taskMeta(data.task).name}`;
       run.status = data.status;
       run.result = data.result;
+      run.lines = (run.lines || []).concat(lines);
       if (data.status !== 'running') run.drained = true;
       const log = $('#dockLog');
       if (log) dock.nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-      lines.forEach((line) => dockAppend(line, dockAnnotate(line, run)));
+      lines.forEach((line) => dockAppend(line, dockAnnotate(line, run), run));
+      dockRenderTabs();
       if (lines.length) dockScrollAll();
     } catch (e) { run.drained = true; }
   }
@@ -1291,12 +1889,12 @@
     if (!peek) return;
     const node = $('#logDock');
     const closed = !node || node.hidden;
-    const running = dock.jobId && dock.runs.some((r) => r.status === 'running');
+    const running = dock.jobIds.length && dock.runs.some((r) => r.status === 'running');
     peek.hidden = !(closed && (running || dock.runs.length));
   }
 
   async function dockFollow(job) {
-    if (dock.jobId !== job.id) return;
+    if (!dock.jobIds.includes(job.id)) return;
     if (!$('#dockLog')) return;
     const idx = (typeof job.index === 'number' && job.index >= 0) ? job.index : null;
     const stepRuns = idx !== null ? ((job.steps[idx] && job.steps[idx].runs) || []) : [];
@@ -1307,6 +1905,18 @@
         if (dock.runs.some((r) => r.id === id)) return;
         dock.runs.push({ id, label: '', offset: 0, status: 'running', drained: false });
       });
+      // 一直循环时不要无限累积已读完的 run 句柄（日志行本身有 2400 行上限）
+      if (dock.runs.length > 80) {
+        const active = dock.runs.filter((r) => !r.drained);
+        const drained = dock.runs.filter((r) => r.drained).slice(-40);
+        dock.runs = active.concat(drained);
+      }
+    }
+    if (job.round && job.round !== dock.lastRound) {
+      dock.lastRound = job.round;
+      const label = job.infinite ? `第 ${job.round} 轮 · 一直循环`
+        : `第 ${job.round}/${job.total_rounds || 1} 轮`;
+      dockAppend(`=== ${label} ===`, label, null);
     }
     await Promise.all(dock.runs.map(dockPull));
 
@@ -1315,7 +1925,10 @@
     const cur = job.current ? taskMeta(job.current).name : null;
     let sub;
     if (job.status === 'running') {
-      sub = cur ? `正在执行：${cur} · 进度 ${done}/${job.steps.length} 步` : `准备中…`;
+      const prefix = loopRound(job) ? loopRound(job) + ' · ' : '';
+      sub = job.note ? `${prefix}${job.note}`
+        : cur ? `${prefix}正在执行：${cur} · 进度 ${done}/${job.steps.length} 步`
+          : `${prefix}准备中…`;
     } else {
       sub = `已结束（${{ finished: '全部成功', failed: '有失败步骤', cancelled: '已停止' }[job.status] || job.status}）· ${done}/${job.steps.length} 步`;
     }
@@ -1332,7 +1945,7 @@
       dockEl.classList.remove('failed');
       // 成功后 5 秒自动收起（用户手动重新打开不受影响）
       setTimeout(() => {
-        if (dock.jobId === job.id && !$('#logDock').hidden) dockSetOpen(false);
+        if (dock.jobIds.includes(job.id) && !$('#logDock').hidden) dockSetOpen(false);
       }, 5000);
     }
   }
@@ -1422,10 +2035,16 @@
     const teamCard = el('div', { class: 'task-card', style: 'margin-bottom:12px' },
       el('div', { class: 'tc-top' },
         el('span', { class: 'tc-name', text: '自定义组队' }),
-        el('span', { class: 'badge badge-gold', text: '队伍配置' }),
-        el('span', { class: 'badge badge-dim', text: '非游戏玩法' })),
+        el('span', { class: 'badge badge-gold', text: '队伍配置' })),
       el('div', { class: 'tc-desc', text: '指定队长与队员，插在刷本任务之前；后面的组队玩法沿用这支队伍。' }),
       el('div', { class: 'tc-ops' }, btn('添加这一步', 'users', () => { closeModal(); openTeamDrawer(null); }, 'primary sm')),
+    );
+    const clickCard = el('div', { class: 'task-card', style: 'margin-bottom:12px' },
+      el('div', { class: 'tc-top' },
+        el('span', { class: 'tc-name', text: '自定义点击' }),
+        el('span', { class: 'badge badge-gold', text: 'OCR + 拟人点击' })),
+      el('div', { class: 'tc-desc', text: 'OCR 判定 → 框选点击 → 延时，逐层执行。' }),
+      el('div', { class: 'tc-ops' }, btn('选择 / 新建方案', 'plus', () => { closeModal(); openCustomClickLibrary(); }, 'primary sm')),
     );
     const cats = ['全部'].concat((state.catalog ? state.catalog.categories : []).map((c) => c.key));
 
@@ -1480,7 +2099,7 @@
     paintTabs(); paintCatLine(); paintGrid();
     openModal({
       title: '添加任务',
-      body: el('div', {}, teamCard,
+      body: el('div', {}, teamCard, clickCard,
         el('div', { class: 'lib-toolbar' },
           el('div', { class: 'search' }, el('span', { html: icon('search', 14) }), search)),
         tabs, catLine, grid),
@@ -1490,8 +2109,9 @@
 
   function applyTemplateSteps(tpl, flow) {
     const added = withTeamStep(tpl.steps.map((s) => ({
-      task: s.task, mode: s.mode === 'team' ? 'team' : 'solo',
+      task: s.task, mode: (s.mode === 'team' || s.mode === 'duo') ? 'team' : 'solo',
       patch: s.patch || {}, note: s.note || '', enabled: s.enabled !== false,
+      plan_id: s.plan_id || null, plan_name: s.plan_name || '',
     })), flow.accounts);
     flow.steps = flow.steps.concat(added);
     return saveFlow(flow);
@@ -1499,29 +2119,15 @@
 
   function openTemplatePicker() {
     const body = el('div');
-    const builtin = (state.catalog ? state.catalog.flow_templates : []);
     const mine = state.flowLib || [];
-    body.appendChild(el('div', { class: 'panel-head' }, el('h3', { text: '内置方案' })));
-    const list = el('div', { class: 'grid grid-2' });
-    builtin.forEach((tpl) => {
-      list.appendChild(el('div', { class: 'task-card' },
-        el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: tpl.name })),
-        el('div', { class: 'tc-desc', text: tpl.desc }),
-        el('div', { class: 'tc-ops' },
-          btn('追加步骤', 'plus', async () => {
-            const flow = currentFlow();
-            await applyTemplateSteps(tpl, flow);
-            closeModal();
-          }, 'sm primary')),
-      ));
-    });
-    body.appendChild(list);
-    if (mine.length) {
-      body.appendChild(el('div', { class: 'panel-head', style: 'margin-top:14px' },
-        el('h3', { text: '我的方案' })));
-      const myList = el('div', { class: 'grid grid-2', style: 'margin-top:8px' });
+    if (!mine.length) {
+      body.appendChild(el('div', { class: 'empty' },
+        el('strong', { text: '还没有自定义方案' }),
+        el('p', { text: '在编排详情点「存为自定义方案」即可保存。' })));
+    } else {
+      const list = el('div', { class: 'grid grid-2' });
       mine.forEach((tpl) => {
-        myList.appendChild(el('div', { class: 'task-card' },
+        list.appendChild(el('div', { class: 'task-card' },
           el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: tpl.name })),
           el('div', { class: 'tc-desc', text: `${tpl.steps.length} 步` }),
           el('div', { class: 'tc-ops' },
@@ -1540,7 +2146,7 @@
           ),
         ));
       });
-      body.appendChild(myList);
+      body.appendChild(list);
     }
     openModal({ title: '选择方案', body, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
   }
@@ -1764,7 +2370,7 @@
               tb.appendChild(el('tr', {},
                 el('td', { text: job.flow_name }),
                 el('td', { class: 'mono', text: job.current ? taskMeta(job.current).name : '—' }),
-                el('td', { class: 'mono', text: `${done}/${job.steps.length}` }),
+                el('td', { class: 'mono', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 步` }),
                 el('td', { class: 'mono muted', text: (job.started || '').replace('T', ' ') }),
                 el('td', {}, el('button', { class: 'btn btn-sm btn-danger', text: '停止', 'data-act': 'stopJob', 'data-id': job.id })),
               ));
@@ -1785,7 +2391,10 @@
       state.jobs.forEach((job) => {
         const done = job.steps.filter((s) => ['ok', 'fail', 'skipped'].includes(s.status)).length;
         tb.appendChild(el('tr', { class: 'row-click', 'data-act': 'openJob', 'data-id': job.id },
-          el('td', { text: job.flow_name }),
+          el('td', {},
+            el('div', { text: job.flow_name }),
+            el('div', { class: 'small muted', text: loopLabel(job.loop)
+              + (job.round ? ` · 已完成 ${job.round} 轮${job.infinite ? '（一直循环）' : ''}` : '') })),
           el('td', {}, statusBadge(job.status)),
           el('td', { class: 'mono', text: `${done}/${job.steps.length}` }),
           el('td', { class: 'mono muted', text: (job.started || '').replace('T', ' ') }),
@@ -1857,8 +2466,33 @@
       el('div', { class: 'row between', style: 'margin-bottom:12px' },
         el('div', {}, el('span', { class: 'small muted', text: '开始 ' + (job.started || '').replace('T', ' ') })),
         job.status === 'running' ? btn('停止', 'x', () => stopJob(job.id), 'danger') : statusBadge(job.status)),
+      el('div', { class: 'small muted', style: 'margin-bottom:10px',
+        text: `${loopLabel(job.loop)} · ${loopRound(job) || '共 1 轮'}${job.last_error ? ` · 上一轮失败：${job.last_error}` : ''}` }),
+      el('div', { class: 'section-title' }, el('h2', { text: `${loopRound(job) || '第 1 轮'}步骤` })),
       list,
     );
+    // 多轮作业时把每轮结果列出来，点「日志」能直接定位到那一轮的进程
+    if ((job.rounds || []).length) {
+      const rounds = el('div', { class: 'steps', style: 'margin-top:14px' });
+      job.rounds.slice().reverse().forEach((r) => {
+        rounds.appendChild(el('div', { class: 'step' },
+          el('div', { class: 'step-num' }, el('span', { text: String(r.round).padStart(2, '0') })),
+          el('div', { class: 'step-main' },
+            el('div', { class: 'step-line1' },
+              el('span', { class: 'name', text: `第 ${r.round} 轮` }),
+              statusBadge(r.status === 'cancelled' ? 'cancelled' : (r.status === 'ok' ? 'ok' : 'fail'))),
+            el('div', { class: 'step-line2' },
+              el('span', { class: 'small muted', text: `${(r.started || '').replace('T', ' ')} → ${duration(r.started, r.finished)}` }),
+              r.error ? el('span', { class: 'small', text: ' · ' + r.error }) : null,
+              (r.runs || []).map((rid) => el('button', { class: 'btn btn-sm btn-ghost',
+                text: '日志 ' + rid, 'data-act': 'openLog', 'data-id': rid })),
+            ),
+          ),
+          el('div', {}),
+        ));
+      });
+      body.append(el('div', { class: 'section-title mt-20' }, el('h2', { text: '轮次记录' })), rounds);
+    }
     openDrawer({ kicker: '执行记录', title: job.flow_name, body, foot: [btn('关闭', 'x', closeDrawer, 'ghost')] });
   }
 
@@ -1892,7 +2526,7 @@
     else if (/RESULT: True|SUCCESS/i.test(line)) cls = 'ln-ok';
     else if (/^===/.test(line)) cls = 'ln-head';
     box.appendChild(el('div', { class: cls, text: line }));
-    box.scrollTop = box.scrollHeight;
+    if (dock.autoScroll) box.scrollTop = box.scrollHeight;
   }
 
   /* ---------------- 已知问题 ---------------- */
@@ -1918,6 +2552,25 @@
 
   /* ---------------- 高级 ---------------- */
   function renderAdvanced(root) {
+    root.appendChild(el('div', { class: 'section-title' }, el('h2', { text: '干净会话' }),
+      el('span', { class: 'sub', text: '每次启动 / 退出都会清空账号绑定与旧 adb 端口。' })));
+    const sessionPanel = el('div', { class: 'panel', style: 'margin-bottom:18px' });
+    const sessionBody = el('div', { class: 'panel-body' },
+      el('p', { class: 'small muted', text: '启动时会删除全部实例配置（含 .bak / .tmp）和旧的模拟器端口，'
+        + '所以每次打开控制台都是重新绑定账号的状态。任务编排、自定义方案库、账号资料（含组队游戏昵称）会长期保留：'
+        + '任务是通用模板，不跟某个号走。' }),
+      btn('立即清空账号绑定', 'trash', async () => {
+        if (!confirm('清空全部账号绑定与运行状态？\n\n任务编排 / 自定义方案 / 账号资料会保留。')) return;
+        try {
+          const r = await api('/api/instances/unbind-all', { method: 'POST' });
+          await refreshAll();
+          toast(`已清空 ${r.removed.length} 个实例绑定，任务模板已保留`, 'ok');
+        } catch (e) { toast('清空失败：' + e.message, 'err'); }
+      }, 'danger'),
+    );
+    sessionPanel.appendChild(sessionBody);
+    root.appendChild(sessionPanel);
+
     root.appendChild(el('div', { class: 'section-title' }, el('h2', { text: '协助悬赏封印邀请' }),
       el('span', { class: 'sub', text: '好友发起协助邀请时的处理策略，按模拟器账号设置。' })));
     const popupPanel = el('div', { class: 'panel' });
@@ -2036,10 +2689,20 @@
     stepUp: (btn) => stepUp(btn.dataset.id),
     stepDown: (btn) => stepDown(btn.dataset.id),
     selectFlow: (btn) => selectFlow(btn.dataset.id),
-    runFlow: (btn) => runFlow(btn.dataset.id),
+    runFlow: (btn) => runFlow(state.flows.find((f) => f.id === btn.dataset.id)),
     newFlow: (btn) => openNewFlowDrawer(btn.dataset.account),
     stepDelete: (btn) => stepDelete(btn.dataset.id),
     stepConfig: (btn) => openStepConfig(btn.dataset.id),
+    customClickConfig: (btn) => {
+      const flow = currentFlow();
+      const s = flow && flow.steps.find((x) => x.id === btn.dataset.id);
+      if (!s) return;
+      if (!s.plan_id || !state.customPlans.some((p) => p.id === s.plan_id)) {
+        return openCustomClickLibrary({ forStep: s.id });
+      }
+      openCustomClickEditor(s.plan_id, false);
+    },
+    customClickSwap: (btn) => openCustomClickLibrary({ forStep: btn.dataset.id }),
     teamConfig: (btn) => openTeamDrawer(btn.dataset.id),
     openJob: (btn) => openJobDrawer(btn.dataset.id),
     openLog: (btn) => openLogDrawer(btn.dataset.id, taskMeta(btn.dataset.task).name),
@@ -2050,6 +2713,7 @@
       if (log) log.innerHTML = '';
     },
     dockPeekOpen: () => dockSetOpen(true),
+    dockInstance: (btn) => dockSelectInstance(btn.dataset.id),
   };
 
   document.addEventListener('click', (e) => {
@@ -2066,6 +2730,18 @@
     if (window.oasDesktop && window.oasDesktop.isElectron) document.body.classList.add('electron');
     renderNav();
     dockInitResize();
+    try {
+      dock.autoScroll = localStorage.getItem(DOCK_SCROLL_KEY) !== '0';
+      const cb = $('#dockAutoScroll');
+      if (cb) {
+        cb.checked = dock.autoScroll;
+        cb.addEventListener('change', () => {
+          dock.autoScroll = cb.checked;
+          try { localStorage.setItem(DOCK_SCROLL_KEY, dock.autoScroll ? '1' : '0'); } catch (e) { /* ignore */ }
+          if (dock.autoScroll) dockScrollAll();
+        });
+      }
+    } catch (e) { /* ignore */ }
     // 恢复日志坞的显隐与高度偏好
     try {
       const savedH = localStorage.getItem(DOCK_H_STORE_KEY);
@@ -2079,12 +2755,12 @@
       await refreshAll();
       setBridge(true);
       // 刷新页面时若有作业在跑，自动接上（日志坞继续显示，不打断观察）
-      const running = (state.jobs || []).find((j) => j.status === 'running');
-      if (running && !dock.jobId) {
-        dockReset(running.id);
-        state.jobId = running.id;
+      const running = (state.jobs || []).filter((j) => j.status === 'running');
+      if (running.length && !dock.jobIds.length) {
+        dockReset(running.map((j) => j.id));
+        state.jobId = running[0].id;
         dockSetOpen(true);
-        watchJob(running.id);
+        running.forEach((j) => watchJob(j.id));
       }
     } catch (e) {
       setBridge(false);

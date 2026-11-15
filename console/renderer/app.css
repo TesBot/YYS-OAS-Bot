@@ -129,6 +129,7 @@ body.electron .app { height: calc(100vh - 40px); }
 .dot-idle { background: var(--text-3); }
 .dot-err { background: var(--err); box-shadow: 0 0 0 3px rgba(176,42,48,.14); }
 .dot-warn { background: var(--warn); }
+.side-version { font-size: 11px; color: var(--text-3); padding: 0 8px 7px; font-family: var(--mono); }
 .side-links { display: flex; gap: 6px; padding: 0 8px; align-items: center; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--text-3); font-size: 11.5px; }
 .link-btn:hover { color: var(--accent); }
@@ -682,3 +683,36 @@ body.dock-resizing .logdock { transition: none; }
 .acct-act-run { border-color: rgba(184,73,31,.28); background: rgba(184,73,31,.05); }
 .acct-act-idle { border-style: dashed; }
 .acct-act-off { border-color: rgba(176,42,48,.24); background: rgba(176,42,48,.05); }
+
+
+/* 多实例日志：标题处实例切换 + 自动滚动开关 */
+.dock-tabs{display:flex;gap:4px;margin-left:10px;flex-wrap:wrap;max-width:46%;overflow-x:auto}
+.dock-tab{flex:0 0 auto;border:1px solid #e3ded4;background:transparent;color:#6b655c;border-radius:6px;padding:2px 9px;font-size:12px;line-height:1.5;cursor:pointer}
+.dock-tab:hover{border-color:#b9ae98}
+.dock-tab.active{background:#8a6c3f;color:#fff;border-color:#8a6c3f}
+.dock-scroll{display:flex;align-items:center;gap:5px;font-size:12px;color:#6b655c;white-space:nowrap;cursor:pointer;user-select:none}
+.dock-scroll input{margin:0;cursor:pointer}
+
+/* 自定义点击：方案编辑器 + 画面上直接拖框 */
+.cc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
+.cc-grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.cc-steps{display:flex;flex-direction:column;gap:10px}
+.cc-step-head{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--line)}
+.cc-step-head strong{flex:none;font-size:13px}
+.cc-name{width:130px;flex:none}
+.cc-cap-tools{flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+.cc-cap-tools .select{width:auto;min-width:120px}
+.cc-cap-tools .small{flex:1;min-width:150px;line-height:1.5}
+.cc-cap-tools .btn-sm{flex:none}
+.cc-stage{position:relative;width:100%;border:1px solid var(--line-2);border-radius:8px;overflow:hidden;background:#000;cursor:crosshair;user-select:none;touch-action:none}
+.cc-stage.empty{background:var(--panel-3);cursor:default;min-height:150px;display:flex;align-items:center;justify-content:center}
+.cc-stage-empty{font-size:12px;color:var(--text-3);padding:20px;text-align:center}
+/* 类选择器会盖掉 UA 的 [hidden]{display:none}，必须显式兜住 */
+.cc-stage-empty[hidden],.cc-stage-img[hidden],.cc-sel[hidden]{display:none}
+.cc-stage-img{display:block;width:100%;height:auto;pointer-events:none}
+.cc-sel{position:absolute;border:2px solid var(--accent);background:rgba(184,73,31,.18);box-shadow:0 0 0 9999px rgba(0,0,0,.30);pointer-events:none;min-width:2px;min-height:2px}
+/* .field 自身是 display:flex，会盖掉 UA 的 [hidden]，必须显式兜住 */
+.cc-grid .field[hidden]{display:none}
+.cc-check{display:flex;align-items:center;gap:6px;margin:0 0 12px;font-size:12px;color:var(--text-2);cursor:pointer;user-select:none}
+.cc-check input{margin:0;cursor:pointer}
+.cc-grid .row input{width:96px}

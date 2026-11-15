@@ -12,8 +12,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import copy
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -36,6 +39,7 @@ PLAN_FILE = CONFIG_DIR / "plans.json"
 FLOW_FILE = CONFIG_DIR / "gui_flows.json"
 FLOW_LIBRARY_FILE = CONFIG_DIR / "gui_flow_library.json"
 PROFILE_FILE = CONFIG_DIR / "gui_profiles.json"
+CUSTOM_CLICK_FILE = CONFIG_DIR / "gui_custom_clicks.json"
 SCHEMA_CACHE = Path(__file__).resolve().parent / ".cache" / "schema.json"
 # 便携整包布局：bridge 由打包内嵌的 Python 直接运行，子进程一律用当前解释器；
 # 开发布局：bridge 运行于 .venv，sys.executable 同样指向 venv 的 python.exe。
@@ -159,11 +163,12 @@ def _load(path: Path) -> dict:
             raise HTTPException(500, f"配置解析失败 {path.name}: {exc}") from exc
 
 
-def _save(path: Path, data: dict) -> None:
+def _save(path: Path, data: dict, backup: bool = True) -> None:
     with _CONFIG_LOCK:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        shutil.copy(path, path.with_suffix(".json.bak")) if path.exists() else None
+        if backup and path.exists():
+            shutil.copy(path, path.with_suffix(".json.bak"))
         tmp.replace(path)
 
 
@@ -321,7 +326,6 @@ def get_catalog():
         ],
         "issues": catalog.KNOWN_ISSUES,
         "field_hints": [{"match": m, "hint": h} for m, h in catalog.FIELD_HINTS],
-        "flow_templates": catalog.FLOW_TEMPLATES,
         "summary_keys": catalog.SUMMARY_KEYS,
         "team_tasks": sorted(catalog.TEAM_TASKS),
     }
@@ -579,6 +583,12 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 
 
 
+@app.get("/api/version")
+def version():
+    """安装包版本。升级后用来确认用户实际跑的是哪一份 bridge，而不是旧包。"""
+    return {"version": "1.1.22", "build": "battle-idle"}
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -712,9 +722,48 @@ def delete_instance(name: str):
     if touched:
         _save_flows(flows)
 
-    # 4. 删除配置
-    path.unlink()
+    # 4. 删除配置（解绑不保留备份，顺带清掉历史 .bak / .tmp）
+    path.unlink(missing_ok=True)
+    for suffix in (".json.bak", ".json.tmp"):
+        try:
+            (CONFIG_DIR / f"{name}{suffix}").unlink(missing_ok=True)
+        except OSError:
+            pass
     return {"ok": True, "remaining": len(_instance_files())}
+
+
+@app.post("/api/instances/unbind-all")
+def unbind_all():
+    """清空全部实例绑定与运行状态；任务编排 / 方案库 / 账号资料保持不变。"""
+    # 先停循环作业，否则 worker 会在下一轮重新对已删除的实例写配置、拉进程
+    for job_id, job in list(_JOBS.items()):
+        if job["status"] == "running":
+            stop_job(job_id)
+    removed = []
+    for path in _instance_files():
+        name = path.stem
+        for run in list(_RUNS.values()):
+            if run.get("instance") != name or run.get("status") not in ("running", "pending"):
+                continue
+            proc = run.get("proc")
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            run["status"] = "stopped"
+            run["finished"] = datetime.now().isoformat(timespec="seconds")
+        path.unlink(missing_ok=True)
+        for suffix in (".json.bak", ".json.tmp"):
+            try:
+                (CONFIG_DIR / f"{name}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                pass
+        removed.append(name)
+    # 编排表、自定义方案库与账号资料一律保留：任务是通用模板，不随账号清除
+    return {"ok": True, "removed": removed,
+            "kept": ["gui_flows.json", "gui_flow_library.json", "gui_profiles.json"]}
 
 
 @app.post("/api/instances/{name}/test")
@@ -839,6 +888,9 @@ def _normalize_step(step: dict, index: int) -> dict:
         "team": step.get("team") or {},
         "patch": step.get("patch") or {},
         "note": step.get("note") or "",
+        # 自定义点击是控制台伪任务：引用方案库里的一份方案，不写实例配置
+        "plan_id": step.get("plan_id"),
+        "plan_name": step.get("plan_name") or "",
         "order": index,
     }
 
@@ -870,6 +922,73 @@ def _participants(step: dict, accounts: list[str],
     return [(acct, "leader" if i == 0 else "member") for i, acct in enumerate(roster_accounts)]
 
 
+def _loop_interval(value: Any) -> int:
+    """两轮之间的缓冲秒数，给模拟器留出回庭院 / 结算的时间。"""
+    try:
+        return max(0, min(int(value if value is not None else 3), 300))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _normalize_loop(raw: Any) -> dict:
+    """编排循环设置。
+
+    once    : 只跑一遍（默认）
+    count   : 整份编排重复 N 轮，2 <= N <= 999
+    forever : 一直循环，直到用户点「停止」
+    on_error: stop（某轮失败即结束）/ continue（跳过失败，继续下一轮）
+    """
+    data = raw if isinstance(raw, dict) else {}
+    mode = data.get("mode")
+    if mode not in ("once", "count", "forever"):
+        mode = "once"
+    count: int | None = None
+    if mode == "once":
+        count = 1
+    elif mode == "count":
+        try:
+            count = max(2, min(int(data.get("count") or 2), 999))
+        except (TypeError, ValueError):
+            count = 2
+    return {
+        "mode": mode,
+        "count": count,
+        "on_error": "continue" if data.get("on_error") == "continue" else "stop",
+        "interval": _loop_interval(data.get("interval")),
+    }
+
+
+def _idle_seconds(value: Any, default: float) -> float:
+    try:
+        return round(max(0.0, min(float(default if value is None else value), 600.0)), 2)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_idle(raw: Any) -> dict:
+    """编排级「随机发呆」：任务执行前后、自定义点击每层循环前后按概率静止不操作。
+
+    enable       默认关闭，不改变既有编排的执行节奏
+    min/max      随机发呆秒数区间（0–600s）
+    probability  每个判定点独立触发的概率（0–1）
+    """
+    data = raw if isinstance(raw, dict) else {}
+    lo = _idle_seconds(data.get("min"), 2.0)
+    hi = _idle_seconds(data.get("max"), 6.0)
+    if hi < lo:
+        lo, hi = hi, lo
+    try:
+        prob = max(0.0, min(float(data.get("probability", 0.15)), 1.0))
+    except (TypeError, ValueError):
+        prob = 0.15
+    return {
+        "enable": data.get("enable") is True,
+        "min": lo,
+        "max": hi,
+        "probability": round(prob, 3),
+    }
+
+
 def _normalize_flow(flow: dict) -> dict:
     steps = [_normalize_step(s, i) for i, s in enumerate(flow.get("steps") or [])]
     for i, step in enumerate(steps):
@@ -879,6 +998,8 @@ def _normalize_flow(flow: dict) -> dict:
         "name": (flow.get("name") or "未命名编排").strip(),
         "accounts": [a for a in (flow.get("accounts") or []) if a],
         "steps": steps,
+        "loop": _normalize_loop(flow.get("loop")),
+        "idle": _normalize_idle(flow.get("idle")),
         "updated": flow.get("updated") or datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -904,7 +1025,7 @@ def update_flow(flow_id: str, payload: dict = Body(...)):
     flows = _load_flows()
     for i, flow in enumerate(flows):
         if flow.get("id") == flow_id:
-            merged = {**flow, **{k: payload[k] for k in ("name", "accounts", "steps") if k in payload}}
+            merged = {**flow, **{k: payload[k] for k in ("name", "accounts", "steps", "loop", "idle") if k in payload}}
             merged["updated"] = datetime.now().isoformat(timespec="seconds")
             flows[i] = _normalize_flow(merged)
             _save_flows(flows)
@@ -964,8 +1085,12 @@ def _template_steps(steps: list[dict]) -> list[dict]:
         mode = s.get("mode") if s.get("mode") in ("solo", "team") else "solo"
         if mode == "team" and not catalog.task_team(task):
             mode = "solo"
-        out.append({"task": task, "enabled": bool(s.get("enabled", True)),
-                    "mode": mode, "patch": s.get("patch") or {}, "note": s.get("note") or ""})
+        entry = {"task": task, "enabled": bool(s.get("enabled", True)),
+                 "mode": mode, "patch": s.get("patch") or {}, "note": s.get("note") or ""}
+        if task == catalog.CUSTOM_CLICK_KEY and s.get("plan_id"):
+            entry["plan_id"] = s["plan_id"]
+            entry["plan_name"] = s.get("plan_name") or ""
+        out.append(entry)
     return out
 
 
@@ -1006,41 +1131,291 @@ def delete_flow_template(tpl_id: str):
     return {"ok": True}
 
 
+# ────────────────────────── 自定义点击方案库 ──────────────────────────
+# 与实例配置分开：方案是通用模板，账号解绑/干净会话都保留。
+# 编排步骤只存 plan_id，执行时由 _custom_plan_for_step 解析成完整方案。
+
+_CC_FULL_RECT = [0, 0, 1280, 720]  # 引擎强制 1280x720
+
+
+def _cc_rect(value) -> list[int]:
+    try:
+        x1, y1, x2, y2 = (int(round(float(v))) for v in (value or _CC_FULL_RECT)[:4])
+    except (TypeError, ValueError):
+        return list(_CC_FULL_RECT)
+    x1, x2 = sorted((max(0, min(x1, 1280)), max(0, min(x2, 1280))))
+    y1, y2 = sorted((max(0, min(y1, 720)), max(0, min(y2, 720))))
+    if x2 - x1 < 2:
+        x2, x1 = min(1280, x1 + 2), max(0, x2 - 2)
+    if y2 - y1 < 2:
+        y2, y1 = min(720, y1 + 2), max(0, y2 - 2)
+    return [x1, y1, x2, y2]
+
+
+def _cc_range(value, default: tuple[float, float]) -> list[float]:
+    try:
+        a, b = (float(v) for v in (value or default)[:2])
+    except (TypeError, ValueError):
+        return list(default)
+    a, b = max(0.0, min(a, 300.0)), max(0.0, min(b, 300.0))
+    return [a, b] if a <= b else [b, a]
+
+
+def _cc_lines(value) -> list[str]:
+    """texts / forbid 既接受数组，也接受一行一条的多行文本。"""
+    if isinstance(value, str):
+        value = value.splitlines()
+    return [str(v).strip() for v in (value or []) if str(v).strip()]
+
+
+def _normalize_cc_repeat(raw) -> dict:
+    """层级内循环：once / count / forever；gap 秒为轮间隔，recheck 控制每轮是否重新 OCR。"""
+    raw = raw if isinstance(raw, dict) else {}
+    mode = raw.get("mode")
+    if mode not in ("once", "count", "forever"):
+        mode = "once"
+    try:
+        count = max(1, min(int(raw.get("count") or 2), 999))
+    except (TypeError, ValueError):
+        count = 2
+    try:
+        gap = max(0.0, min(float(raw.get("gap") or 0), 300.0))
+    except (TypeError, ValueError):
+        gap = 0.0
+    return {
+        "mode": mode,
+        "count": count,
+        "gap": round(gap, 2),
+        "recheck": raw.get("recheck") is not False,
+    }
+
+
+def _cc_jump(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_cc_step(raw, index: int) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "id": raw.get("id") or f"cs{uuid.uuid4().hex[:6]}",
+        "name": (raw.get("name") or f"第 {index + 1} 层").strip(),
+        "texts": _cc_lines(raw.get("texts")),
+        "forbid": _cc_lines(raw.get("forbid")),
+        "match": "any" if raw.get("match") == "any" else "all",
+        "ocr_roi": _cc_rect(raw.get("ocr_roi")),
+        "rect": _cc_rect(raw.get("rect")),
+        "score": round(max(0.1, min(float(raw.get("score") or 0.6), 1.0)), 2),
+        "delay_before": _cc_range(raw.get("delay_before"), (0.2, 0.8)),
+        "delay_after": _cc_range(raw.get("delay_after"), (0.4, 1.2)),
+        "repeat": _normalize_cc_repeat(raw.get("repeat")),
+        "jump": _cc_jump(raw.get("jump")),
+    }
+
+
+def _normalize_cc_plan(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    steps = [_normalize_cc_step(s, i) for i, s in enumerate(raw.get("steps") or [])]
+    for st in steps:  # 删层后目标层号可能越界，统一归零（不跳转）
+        if not 1 <= st["jump"] <= len(steps):
+            st["jump"] = 0
+    return {
+        "id": raw.get("id") or f"cc{uuid.uuid4().hex[:8]}",
+        "name": (raw.get("name") or "未命名方案").strip(),
+        "timeout": max(1, min(int(raw.get("timeout") or 30), 3600)),
+        "poll": _cc_range(raw.get("poll"), (0.3, 0.8)),
+        "battle": raw.get("battle") is not False,  # 全局自动接管引擎战斗，可整份方案关闭
+        "steps": steps,
+        "updated": raw.get("updated") or datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _load_custom_plans() -> list[dict]:
+    if not CUSTOM_CLICK_FILE.exists():
+        return []
+    try:
+        data = json.loads(CUSTOM_CLICK_FILE.read_text(encoding="utf-8"))
+        data = data.get("plans") if isinstance(data, dict) else data
+        return [_normalize_cc_plan(p) for p in data if isinstance(p, dict)] \
+            if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _save_custom_plans(plans: list[dict]) -> None:
+    _save(CUSTOM_CLICK_FILE, {"plans": plans}, backup=False)
+
+
+def _custom_plan_for_step(step: dict) -> dict:
+    plan_id = step.get("plan_id")
+    plan = next((p for p in _load_custom_plans() if p["id"] == plan_id), None)
+    if plan is None:
+        raise HTTPException(400, f"自定义点击方案不存在或已删除：{plan_id or '（未选择方案）'}")
+    if not plan["steps"]:
+        raise HTTPException(400, f"自定义点击方案「{plan['name']}」没有配置任何层级")
+    return plan
+
+
+@app.get("/api/custom-clicks")
+def list_custom_clicks():
+    return {"plans": _load_custom_plans()}
+
+
+@app.post("/api/custom-clicks")
+def create_custom_click(payload: dict = Body(...)):
+    plan = _normalize_cc_plan(payload)
+    if not plan["steps"]:
+        raise HTTPException(400, "方案至少需要一层「检查 → 点击」")
+    plans = _load_custom_plans()
+    plans.append(plan)
+    _save_custom_plans(plans)
+    return {"ok": True, "plan": plan}
+
+
+@app.put("/api/custom-clicks/{plan_id}")
+def update_custom_click(plan_id: str, payload: dict = Body(...)):
+    plans = _load_custom_plans()
+    for i, old in enumerate(plans):
+        if old["id"] == plan_id:
+            plan = _normalize_cc_plan({**old, **payload, "id": plan_id})
+            if not plan["steps"]:
+                raise HTTPException(400, "方案至少需要一层「检查 → 点击」")
+            plan["updated"] = datetime.now().isoformat(timespec="seconds")
+            plans[i] = plan
+            _save_custom_plans(plans)
+            return {"ok": True, "plan": plan}
+    raise HTTPException(404, "方案不存在")
+
+
+@app.post("/api/custom-clicks/{plan_id}/duplicate")
+def duplicate_custom_click(plan_id: str):
+    plans = _load_custom_plans()
+    src = next((p for p in plans if p["id"] == plan_id), None)
+    if src is None:
+        raise HTTPException(404, "方案不存在")
+    copy_plan = _normalize_cc_plan({**src, "id": None, "name": f"{src['name']} 副本"})
+    for step in copy_plan["steps"]:
+        step["id"] = f"cs{uuid.uuid4().hex[:6]}"
+    plans.append(copy_plan)
+    _save_custom_plans(plans)
+    return {"ok": True, "plan": copy_plan}
+
+
+@app.delete("/api/custom-clicks/{plan_id}")
+def delete_custom_click(plan_id: str):
+    plans = _load_custom_plans()
+    used = [
+        f.get("name") or f.get("id") for f in _load_flows()
+        if any(s.get("task") == catalog.CUSTOM_CLICK_KEY and s.get("plan_id") == plan_id
+               for s in (f.get("steps") or []))
+    ]
+    if used:
+        raise HTTPException(409, f"方案正被编排使用（{', '.join(used)}），请先删除对应步骤")
+    remain = [p for p in plans if p["id"] != plan_id]
+    if len(remain) == len(plans):
+        raise HTTPException(404, "方案不存在")
+    _save_custom_plans(remain)
+    return {"ok": True}
+
+
+@app.post("/api/instances/{name}/screenshot")
+def instance_screenshot(name: str):
+    """抓一张当前模拟器画面（1280x720），供自定义点击编辑器拖框选区。"""
+    _instance_path(name)
+    out = ROOT / "log" / "gui" / f"capture_{uuid.uuid4().hex[:8]}.png"
+    cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "custom_click_runner.py"),
+           "--config", name, "--capture", str(out)]
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=45, **kwargs)
+        if not out.exists():
+            detail = (res.stderr or res.stdout or "").strip()[-600:]
+            raise HTTPException(500, f"截图失败：{detail or '未生成图片'}")
+        payload = base64.b64encode(out.read_bytes()).decode("ascii")
+        return {"ok": True, "image": "data:image/png;base64," + payload,
+                "width": 1280, "height": 720}
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "截图超时：模拟器可能未连接，或分辨率不是 1280x720")
+    finally:
+        out.unlink(missing_ok=True)
+
+
 # ────────────────────────── 编排执行 ──────────────────────────
 
 _JOBS: dict[str, dict] = {}
 _JOB_LOCK = threading.RLock()
 
 
-def _apply_step_config(instance: str, task: str, patch: dict, role: str | None) -> None:
+def _apply_step_config(instance: str, task: str, patch: dict, role: str | None,
+                       roster: list[str] | None = None) -> None:
     """把编排步骤上的参数写入实例配置；无配置段的动作任务（如回庭院）直接跳过。"""
     path = _instance_path(instance)
     cfg = _load(path)
     section = cfg.get(task)
     if not isinstance(section, dict):
+        if role:
+            raise HTTPException(400, f"{instance} 缺少任务配置段 {task}，无法参与组队")
         if patch:
             raise HTTPException(400, f"{instance} 缺少任务配置: {task}（该任务不支持参数）")
         return
     if patch:
+        patch = dict(patch)
         if (task or "").lower() == "hyakkiyakou" and isinstance(patch.get("debug_config"), dict):
             # 高频截图/点击通道由 _align_hyakkiyakou_device 在启动时按设备动态决定；
             # 编排里保存的旧值（通常是 window_*）不能回写，否则会把可用配置改坏。
-            patch = dict(patch)
             patch["debug_config"] = {
                 k: v for k, v in patch["debug_config"].items()
                 if k not in ("hya_screenshot_method", "hya_control_method")
             }
+        # 旧版本控制台把「检查契忆数量」写成了独立的 bondling_check 段，
+        # 而引擎只读 bondling_fairyland.bondling_config.check_enable / limit_num。
+        # 老编排里的这段是死字段，这里就地迁移，不再往实例配置里写无效段。
+        legacy = patch.pop("bondling_check", None)
+        if isinstance(legacy, dict) and legacy:
+            cfg_patch = dict(patch.get("bondling_config") or {})
+            for key in ("check_enable", "limit_num"):
+                if key in legacy and key not in cfg_patch:
+                    cfg_patch[key] = legacy[key]
+            if cfg_patch:
+                patch["bondling_config"] = cfg_patch
         _deep_merge(section, patch)
+        if task == "bondling_fairyland":
+            section.pop("bondling_check", None)  # 清掉旧控制台写入的无效段
     if role:
         status_path = _team_status_path(cfg, task)
-        if status_path:
-            head, leaf = status_path.split(".", 1)
-            section.setdefault(head, {})[leaf] = role
+        if not status_path:
+            # 以前这里静默跳过，队员会以默认 leader/alone 运行并永远不接受邀请
+            raise HTTPException(400, f"{instance} 的任务 {task} 缺少 user_status 字段，无法参与组队")
+        head, leaf = status_path.split(".", 1)
+        section.setdefault(head, {})[leaf] = role
+    # 队长端按「游戏内昵称」在好友列表里 OCR 精确匹配邀请；昵称没回填时
+    # 引擎会打印 Invite friend 却一个人都选不上，然后空转 120s 超时。
+    if role == "leader" and roster:
+        profiles = _load_profiles()
+        names = []
+        for member in roster[:2]:
+            nick = (profiles.get(member) or {}).get("nickname") or ""
+            if not nick or nick == member:
+                raise HTTPException(
+                    400,
+                    f"队员 {member} 未填写游戏内昵称：请在「编辑资料」里填与游戏内完全一致的全称，"
+                    "队长端靠 OCR 精确匹配好友列表发出邀请")
+            names.append(nick)
+        invite = section.setdefault("invite_config", {})
+        invite["friend_1"] = names[0]
+        if len(names) > 1:
+            invite["friend_2"] = names[1]
+        invite["invite_number"] = "two" if len(names) > 1 else "one"
     _save(path, cfg)
 
 
 @app.post("/api/flows/{flow_id}/run")
-def run_flow(flow_id: str):
+def run_flow(flow_id: str, payload: dict | None = Body(None)):
     flow = next((f for f in _load_flows() if f.get("id") == flow_id), None)
     if flow is None:
         raise HTTPException(404, "编排表不存在")
@@ -1049,6 +1424,14 @@ def run_flow(flow_id: str):
         raise HTTPException(400, "编排表未绑定账号")
     for account in flow["accounts"]:
         _instance_path(account)
+    # 本次运行可以临时覆盖循环/发呆设置；不传就用编排表保存的默认值。
+    loop = _normalize_loop((payload or {}).get("loop", flow["loop"]))
+    idle = _normalize_idle((payload or {}).get("idle", flow.get("idle")))
+    total = loop["count"] if loop["mode"] != "forever" else None
+    # 运行期间编排表可能被编辑，这里固定一份快照，避免半路换步骤。
+    snapshot = copy.deepcopy(flow["steps"])
+    accounts = list(flow["accounts"])
+
     with _JOB_LOCK:
         running = [j for j in _JOBS.values()
                    if j["flow_id"] == flow_id and j["status"] == "running"]
@@ -1068,77 +1451,178 @@ def run_flow(flow_id: str):
             "id": f"j{uuid.uuid4().hex[:8]}",
             "flow_id": flow_id,
             "flow_name": flow["name"],
-            "accounts": list(flow["accounts"]),
+            "accounts": accounts,
             "status": "running",
             "started": datetime.now().isoformat(timespec="seconds"),
             "finished": None,
             "index": -1,
             "current": None,
-            "steps": [{"task": s["task"], "mode": s["mode"], "enabled": s["enabled"],
-                       "status": "pending", "runs": []} for s in flow["steps"]],
+            "loop": loop,
+            "idle": idle,
+            "note": None,
+            "round": 0,
+            "total_rounds": total,
+            "infinite": loop["mode"] == "forever",
+            "rounds": [],
+            "steps": [],
             "error": None,
+            "last_error": None,
         }
         _JOBS[job["id"]] = job
 
-    def _worker() -> None:
-        accounts = flow["accounts"]
-        active_team: dict | None = None
+    def _blank_steps() -> list[dict]:
+        return [{"task": s["task"], "mode": s["mode"], "enabled": s["enabled"],
+                 "status": "pending", "runs": []} for s in snapshot]
+
+    def _maybe_idle() -> None:
+        """按概率静止一段时间；分片 sleep，点「停止」时能立刻退出。"""
+        if not idle["enable"] or idle["probability"] <= 0 or idle["max"] <= 0:
+            return
+        if random.random() >= idle["probability"]:
+            return
+        seconds = round(random.uniform(idle["min"], idle["max"]), 2)
+        if seconds <= 0:
+            return
+        job["note"] = f"随机发呆 {seconds:g}s"
         try:
-            for idx, step in enumerate(flow["steps"]):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
                 if job["status"] == "cancelled":
-                    break
-                if not step["enabled"]:
-                    job["steps"][idx]["status"] = "skipped"
-                    continue
-                if step["task"] == catalog.TEAM_SETUP_KEY:
-                    # 组队步骤不启动进程，只登记队伍名单供后续步骤使用
-                    team = step.get("team") or {}
-                    if not team.get("leader"):
-                        job["steps"][idx]["status"] = "fail"
-                        job["error"] = f"步骤 {idx + 1}：自定义组队缺少队长"
-                        break
-                    active_team = team
-                    job["team"] = team
-                    job["steps"][idx]["status"] = "ok"
-                    continue
-                job["index"] = idx
-                job["current"] = step["task"]
-                pairs = _participants(step, accounts, active_team)
-                if not pairs:
+                    return
+                time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        finally:
+            job["note"] = None
+
+    def _run_once(round_no: int) -> tuple[bool, str | None]:
+        """把整份编排从头到尾跑一轮；返回 (是否成功, 错误信息)。"""
+        active_team: dict | None = None
+        job["steps"] = _blank_steps()
+        job["index"] = -1
+        job["current"] = None
+        job["error"] = None
+        for idx, step in enumerate(snapshot):
+            if job["status"] == "cancelled":
+                return False, None
+            if not step["enabled"]:
+                job["steps"][idx]["status"] = "skipped"
+                continue
+            if step["task"] == catalog.TEAM_SETUP_KEY:
+                # 组队步骤不启动进程，只登记队伍名单供后续步骤使用
+                team = step.get("team") or {}
+                if not team.get("leader"):
                     job["steps"][idx]["status"] = "fail"
-                    job["error"] = (f"步骤 {idx + 1}：组队步骤至少需要 2 个可用账号"
-                                    if step.get("mode") == "team"
-                                    else f"步骤 {idx + 1}：没有可执行账号")
-                    break
-                run_ids: list[str] = []
-                for account, role in pairs:
+                    return False, f"第 {round_no} 轮 · 步骤 {idx + 1}：自定义组队缺少队长"
+                active_team = team
+                job["team"] = team
+                job["steps"][idx]["status"] = "ok"
+                continue
+            job["index"] = idx
+            job["current"] = step["task"]
+            is_custom = step["task"] == catalog.CUSTOM_CLICK_KEY
+            plan = None
+            if is_custom:
+                # 控制台伪任务：方案独立存放，不写实例 config；多开时每个绑定账号各跑一份
+                try:
+                    # 发呆是编排级配置，运行时注入，不落到方案库里
+                    plan = {**_custom_plan_for_step(step), "idle": idle}
+                except HTTPException as exc:
+                    job["steps"][idx]["status"] = "fail"
+                    return False, f"第 {round_no} 轮 · 步骤 {idx + 1}：{exc.detail}"
+                targets = [step["account"]] if step.get("account") else list(accounts)
+                pairs = [(a, None) for a in targets if a]
+            else:
+                pairs = _participants(step, accounts, active_team)
+            if not pairs:
+                job["steps"][idx]["status"] = "fail"
+                return False, (f"第 {round_no} 轮 · 步骤 {idx + 1}：组队步骤至少需要 2 个可用账号"
+                               if step.get("mode") == "team"
+                               else f"第 {round_no} 轮 · 步骤 {idx + 1}：没有可执行账号")
+            _maybe_idle()  # 任务执行前
+            if job["status"] == "cancelled":
+                job["steps"][idx]["status"] = "cancelled"
+                return False, None
+            run_ids: list[str] = []
+            roster = [a for a, r in pairs if r == "member"]
+            for account, role in pairs:
+                if not is_custom:
                     try:
-                        _apply_step_config(account, step["task"], step["patch"], role)
+                        _apply_step_config(account, step["task"], step["patch"], role,
+                                           roster if role == "leader" else None)
                     except HTTPException as exc:
                         job["steps"][idx]["status"] = "fail"
-                        job["error"] = str(exc.detail)
-                        raise
-                    run_ids.append(_spawn_run(account, step["task"],
-                                              bool(step.get("force_fight")), job["id"]))
-                job["steps"][idx]["status"] = "running"
-                job["steps"][idx]["runs"] = run_ids
-                while True:
-                    time.sleep(1.0)
-                    if job["status"] == "cancelled":
-                        break
-                    states = [_RUNS[r]["status"] for r in run_ids if r in _RUNS]
-                    if states and all(s != "running" for s in states):
-                        break
+                        return False, f"第 {round_no} 轮 · 步骤 {idx + 1}：{exc.detail}"
+                run_ids.append(_spawn_run(account, step["task"],
+                                          bool(step.get("force_fight")), job["id"],
+                                          plan if is_custom else None))
+            job["steps"][idx]["status"] = "running"
+            job["steps"][idx]["runs"] = run_ids
+            while True:
                 if job["status"] == "cancelled":
-                    job["steps"][idx]["status"] = "cancelled"
                     break
-                ok = all((_RUNS[r].get("result") is True) for r in run_ids if r in _RUNS)
-                job["steps"][idx]["status"] = "ok" if ok else "fail"
+                time.sleep(1.0)
+                if job["status"] == "cancelled":
+                    break
+                states = [_RUNS[r]["status"] for r in run_ids if r in _RUNS]
+                if states and all(s != "running" for s in states):
+                    break
+            if job["status"] == "cancelled":
+                job["steps"][idx]["status"] = "cancelled"
+                return False, None
+            ok = all((_RUNS[r].get("result") is True) for r in run_ids if r in _RUNS)
+            job["steps"][idx]["status"] = "ok" if ok else "fail"
+            _maybe_idle()  # 任务执行后
+            if job["status"] == "cancelled":
+                return False, None
+            if not ok:
+                return False, f"第 {round_no} 轮 · 步骤 {idx + 1} 执行失败"
+        return True, None
+
+    def _wait_interval(seconds: int) -> None:
+        # 半秒一跳，用户点停止时能立刻退出等待
+        for _ in range(max(0, seconds) * 2):
+            if job["status"] == "cancelled":
+                return
+            time.sleep(0.5)
+
+    def _worker() -> None:
+        job["steps"] = _blank_steps()
+        try:
+            round_no = 0
+            while True:
+                if job["status"] == "cancelled":
+                    break
+                if total is not None and round_no >= total:
+                    break
+                round_no += 1
+                job["round"] = round_no
+                started = datetime.now().isoformat(timespec="seconds")
+                ok, error = _run_once(round_no)
+                job["rounds"].append({
+                    "round": round_no,
+                    "status": ("cancelled" if job["status"] == "cancelled"
+                               else ("ok" if ok else "fail")),
+                    "started": started,
+                    "finished": datetime.now().isoformat(timespec="seconds"),
+                    "error": error,
+                    "runs": [rid for st in job["steps"] for rid in (st.get("runs") or [])],
+                })
+                if len(job["rounds"]) > 50:  # 无限循环时不让内存无限增长
+                    job["rounds"] = job["rounds"][-50:]
+                if job["status"] == "cancelled":
+                    break
                 if not ok:
-                    job["error"] = f"步骤 {idx + 1} 执行失败"
+                    job["last_error"] = error
+                    if loop["on_error"] == "stop":
+                        job["error"] = error
+                        job["status"] = "failed"
+                        break
+                if total is not None and round_no >= total:
                     break
-            if job["status"] != "cancelled":
-                job["status"] = "finished" if not job.get("error") else "failed"
+                _wait_interval(loop["interval"])
+            if job["status"] == "cancelled":
+                job["error"] = job.get("error") or f"已手动停止（完成 {round_no} 轮）"
+            elif job["status"] != "failed":
+                job["status"] = "finished"
         except Exception as exc:  # noqa: BLE001
             job["status"] = "failed"
             job["error"] = f"{type(exc).__name__}: {exc}"
@@ -1170,11 +1654,22 @@ def stop_job(job_id: str):
     job = _JOBS.get(job_id)
     if job is None:
         raise HTTPException(404, "任务不存在")
+    if job["status"] != "running":
+        return {"ok": True, "status": job["status"]}
     job["status"] = "cancelled"
-    for step in job["steps"]:
-        for run_id in step.get("runs") or []:
+    # 循环作业：本轮步骤 + 历史轮次 + 所有 batch 归属该作业的进程都要停，
+    # 否则无限循环会在下一轮重新拉起 runner。
+    run_ids: set[str] = set()
+    for snap in [job, *(job.get("rounds") or [])]:
+        for step in snap.get("steps") or []:
+            run_ids.update(step.get("runs") or [])
+        run_ids.update(snap.get("runs") or [])
+    with _RUN_LOCK:
+        run_ids.update(rid for rid, run in _RUNS.items()
+                       if run.get("batch") == job_id and run.get("status") == "running")
+        for run_id in run_ids:
             run = _RUNS.get(run_id)
-            if run and run["status"] == "running":
+            if run and run.get("status") == "running":
                 try:
                     run["proc"].terminate()
                 except Exception:  # noqa: BLE001
@@ -1230,18 +1725,28 @@ def _align_hyakkiyakou_device(instance: str) -> None:
         _save(path, cfg)
 
 
-def _spawn_run(instance: str, task: str, force_fight: bool, batch: str | None = None) -> str:
+def _spawn_run(instance: str, task: str, force_fight: bool, batch: str | None = None,
+               plan: dict | None = None) -> str:
     _instance_path(instance)
     if (task or "").lower() == "hyakkiyakou":
         _align_hyakkiyakou_device(instance)
     run_id = uuid.uuid4().hex[:10]
     log_path = ROOT / "log" / "gui" / f"{run_id}_{instance}_{task}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "runner.py"),
-           "--config", instance, "--task", task,
-           "--parent-pid", str(os.getpid())]
-    if force_fight:
-        cmd.append("--force-fight")
+    plan_file = None
+    if plan is not None:
+        # 方案可能很长，命令行装不下：落一份临时 JSON，子进程读文件，跑完清掉
+        plan_file = ROOT / "log" / "gui" / f"{run_id}_{instance}_plan.json"
+        plan_file.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "custom_click_runner.py"),
+               "--config", instance, "--plan-file", str(plan_file),
+               "--parent-pid", str(os.getpid())]
+    else:
+        cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "runner.py"),
+               "--config", instance, "--task", task,
+               "--parent-pid", str(os.getpid())]
+        if force_fight:
+            cmd.append("--force-fight")
     popen_kwargs = {}
     if os.name == "nt":
         # 无窗口运行：bridge 本身由 Electron 以 windowsHide 拉起（无控制台），
@@ -1280,6 +1785,11 @@ def _spawn_run(instance: str, task: str, force_fight: bool, batch: str | None = 
         run["finished"] = datetime.now().isoformat(timespec="seconds")
         if run["result"] is None:
             run["result"] = code == 0
+        if plan_file is not None:
+            try:
+                plan_file.unlink(missing_ok=True)
+            except OSError:  # Windows 上偶尔被短暂占用，留着也无副作用
+                pass
 
     threading.Thread(target=_pump, daemon=True).start()
     return run_id
@@ -1300,15 +1810,18 @@ def start_run(payload: dict = Body(...)):
     batch = uuid.uuid4().hex[:8]
     run_ids: list[str] = []
 
+    def _spawn_step(step: dict, account: str) -> str:
+        plan = (_custom_plan_for_step(step) if step.get("task") == catalog.CUSTOM_CLICK_KEY
+                else None)
+        return _spawn_run(account, step["task"], bool(step.get("force_fight")), batch, plan)
+
     if mode == "parallel":
         for step in steps:
             account = step.get("account") or (payload.get("instance") or "")
-            run_ids.append(_spawn_run(account, step["task"],
-                                      bool(step.get("force_fight")), batch))
+            run_ids.append(_spawn_step(step, account))
     else:
         first, rest = steps[0], steps[1:]
-        run_ids.append(_spawn_run(first.get("account") or payload.get("instance") or "",
-                                  first["task"], bool(first.get("force_fight")), batch))
+        run_ids.append(_spawn_step(first, first.get("account") or payload.get("instance") or ""))
 
         def _chain() -> None:
             current = run_ids[0]
@@ -1322,8 +1835,7 @@ def start_run(payload: dict = Body(...)):
                 if not queue:
                     return
                 nxt = queue.pop(0)
-                current = _spawn_run(nxt.get("account") or payload.get("instance") or "",
-                                     nxt["task"], bool(nxt.get("force_fight")), batch)
+                current = _spawn_step(nxt, nxt.get("account") or payload.get("instance") or "")
                 run_ids.append(current)
 
         threading.Thread(target=_chain, daemon=True).start()

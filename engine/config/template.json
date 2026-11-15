@@ -947,17 +947,16 @@
       "delay_date": 1,
       "float_time": "00:00:00"
     },
-    "bondling_check": {
-      "check_enable": true,
-      "limit_num": 2000
-    },
     "bondling_config": {
       "user_status": "alone",
       "bondling_mode": "mode_1",
       "limit_time": "00:30:00",
       "limit_count": 30,
       "bondling_stone_enable": false,
-      "bondling_stone_class": "镇墓兽"
+      "bondling_stone_class": "镇墓兽",
+      "bondling_search_enable": false,
+      "check_enable": true,
+      "limit_num": 2000
     },
     "bondling_switch_soul": {
       "auto_switch_soul": false,
