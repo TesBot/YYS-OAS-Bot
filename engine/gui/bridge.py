@@ -657,7 +657,7 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 def version():
     """安装包版本。升级后用来确认用户实际跑的是哪一份 bridge，而不是旧包。"""
     # 与控制台版本对齐：这个端点就是用来确认用户实际跑的是哪一份 bridge 的
-    return {"version": "1.1.25", "build": "battle-idle"}
+    return {"version": "1.1.26", "build": "scroll-find"}
 
 
 @app.get("/api/health")
@@ -1268,11 +1268,52 @@ def _cc_jump(value) -> int:
         return 0
 
 
+def _cc_point(value, default: tuple[int, int] = (640, 400)) -> list[int]:
+    """滚动层的鼠标停留点，clamp 进 1280x720。"""
+    try:
+        x, y = (int(round(float(v))) for v in (value or default)[:2])
+    except (TypeError, ValueError):
+        return list(default)
+    return [max(0, min(x, 1279)), max(0, min(y, 719))]
+
+
+_CC_TEMPLATE_LIMIT = 4_000_000  # base64 字符上限，约 3MB PNG，够放大半个屏幕
+
+
+def _normalize_cc_scroll(raw) -> dict:
+    """滚动寻找并点击的参数；字段全部有默认值，旧方案读出来也能直接用。"""
+    raw = raw if isinstance(raw, dict) else {}
+
+    def num(key, default: float, low: float, high: float) -> float:
+        try:
+            n = float(raw.get(key, default))
+        except (TypeError, ValueError):
+            n = float(default)
+        return round(max(low, min(n, high)), 2 if isinstance(default, float) else 0)
+
+    template = raw.get("template")
+    template = template if isinstance(template, str) and len(template) <= _CC_TEMPLATE_LIMIT else ""
+    rect = raw.get("template_rect")
+    return {
+        "anchor": _cc_point(raw.get("anchor")),
+        "direction": "up" if raw.get("direction") == "up" else "down",
+        "wheel": int(num("wheel", 5, 1, 30)),
+        "interval": num("interval", 0.8, 0.2, 5.0),
+        "timeout": num("timeout", 15, 1, 120),
+        "threshold": num("threshold", 0.8, 0.5, 0.99),
+        "method": raw.get("method") if raw.get("method") in ("auto", "wheel", "drag") else "auto",
+        "template": template,
+        "template_rect": _cc_rect(rect) if rect else [],
+    }
+
+
 def _normalize_cc_step(raw, index: int) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     return {
         "id": raw.get("id") or f"cs{uuid.uuid4().hex[:6]}",
         "name": (raw.get("name") or f"第 {index + 1} 层").strip(),
+        "mode": "scroll" if raw.get("mode") == "scroll" else "direct",
+        "scroll": _normalize_cc_scroll(raw.get("scroll")),
         "texts": _cc_lines(raw.get("texts")),
         "forbid": _cc_lines(raw.get("forbid")),
         "match": "any" if raw.get("match") == "any" else "all",

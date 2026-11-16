@@ -959,7 +959,7 @@
   function stepSummary(flow, step) {
     if (step.task === 'custom_click') {
       const p = state.customPlans.find((x) => x.id === step.plan_id);
-      return p ? [`方案 ${p.name}`, `${p.steps.length} 层 · 超时 ${p.timeout}s`]
+      return p ? [`方案 ${p.name}`, `${ccPlanModes(p)} · 超时 ${p.timeout}s`]
         : ['方案已删除，请点齿轮重新选择'];
     }
     const patch = step.patch || {};
@@ -1008,9 +1008,29 @@
       recheck: r.recheck !== false,
     };
   }
+  // 滚动寻找并点击的参数；缺省值与执行器 engine/gui/custom_click_runner.py 的 as_scroll 保持一致
+  function ccScroll(raw) {
+    const r = (raw && typeof raw === 'object') ? raw : {};
+    const a = Array.isArray(r.anchor) && r.anchor.length === 2 ? r.anchor : [640, 400];
+    const cl = (v, lo, hi, d) => Math.max(lo, Math.min(ccNum(v, d), hi));
+    const rr = Array.isArray(r.template_rect) && r.template_rect.length === 4
+      ? r.template_rect.map((n) => Math.round(ccNum(n, 0))) : [];
+    return {
+      anchor: [Math.round(cl(a[0], 0, 1279, 640)), Math.round(cl(a[1], 0, 719, 400))],
+      direction: r.direction === 'up' ? 'up' : 'down',
+      wheel: Math.round(cl(r.wheel, 1, 30, 5)),
+      interval: Math.round(cl(r.interval, 0.2, 5, 0.8) * 100) / 100,
+      timeout: Math.round(cl(r.timeout, 1, 120, 15)),
+      threshold: Math.round(cl(r.threshold, 0.5, 0.99, 0.8) * 100) / 100,
+      method: ['auto', 'wheel', 'drag'].includes(r.method) ? r.method : 'auto',
+      template: typeof r.template === 'string' ? r.template : '',
+      template_rect: rr,
+    };
+  }
   function newCCStep(i) {
     return {
       id: 'cs' + Math.random().toString(36).slice(2, 8), name: `第 ${i + 1} 层`,
+      mode: 'direct', scroll: ccScroll(null),
       texts: [], forbid: [], match: 'all', ocr_roi: CC_FULL.slice(),
       rect: [400, 250, 880, 520], score: 0.6,
       delay_before: CC_BEFORE.slice(), delay_after: [0.8, 1.2], delay: CC_DELAY,
@@ -1030,14 +1050,18 @@
       const after = (s.delay_after && s.delay_after.length === 2)
         ? s.delay_after.map((n) => ccNum(n, CC_DELAY)) : [0.8, 1.2];
       const step = Object.assign(newCCStep(i), s, {
+        mode: s.mode === 'scroll' ? 'scroll' : 'direct',
+        scroll: ccScroll(s.scroll),
         forbid: [], ocr_roi: CC_FULL.slice(), rect: (s.rect || CC_FULL).slice(),
         delay_before: CC_BEFORE.slice(), delay_after: after.slice(),
         delay: Math.round(ccNum(s.delay, (after[0] + after[1]) / 2) * 10) / 10,
         texts: s.texts || [], repeat: ccRepeat(s.repeat),
         jump: Math.max(0, parseInt(s.jump, 10) || 0),
       });
-      delete step.__image;  // 截图只属于编辑期
+      delete step.__image;  // 截图与目标图片缓存只属于编辑期
       delete step.__inst;
+      delete step.__anchorImg;
+      delete step.__tplImg;
       return step;
     });
     if (!p.steps.length) p.steps = [newCCStep(0)];
@@ -1051,6 +1075,8 @@
       steps: draft.steps.map((s) => {
         const d = Math.max(0, Math.min(60, ccNum(s.delay, CC_DELAY)));
         const step = Object.assign({}, s, {
+          mode: s.mode === 'scroll' ? 'scroll' : 'direct',
+          scroll: ccScroll(s.scroll),
           forbid: [], ocr_roi: CC_FULL.slice(), delay_before: CC_BEFORE.slice(),
           delay_after: [Math.round(d * 0.8 * 100) / 100, Math.round(d * 1.2 * 100) / 100],
           repeat: ccRepeat(s.repeat),
@@ -1058,6 +1084,8 @@
         });
         delete step.__image;
         delete step.__inst;
+        delete step.__anchorImg;
+        delete step.__tplImg;
         delete step.delay;
         return step;
       }),
@@ -1069,6 +1097,13 @@
       const data = await api('/api/custom-clicks');
       state.customPlans = data.plans || [];
     } catch (e) { state.customPlans = []; }  // 旧版 bridge 没有该接口时不影响其它页面
+  }
+
+  // 方案摘要：层数 + 其中几层是「滚动寻找并点击」
+  function ccPlanModes(plan) {
+    const steps = plan.steps || [];
+    const scroll = steps.filter((s) => s.mode === 'scroll').length;
+    return scroll ? `${steps.length} 层（滚动找图 ${scroll}）` : `${steps.length} 层`;
   }
 
   async function addCCStepToFlow(plan) {
@@ -1123,7 +1158,7 @@
           el('div', { class: 'tc-top' },
             el('span', { class: 'tc-name', text: p.name }),
             el('span', { class: 'badge badge-dim', text: '方案' })),
-          el('div', { class: 'tc-desc', text: `${p.steps.length} 层 · 超时 ${p.timeout}s` }),
+          el('div', { class: 'tc-desc', text: `${ccPlanModes(p)} · 超时 ${p.timeout}s` }),
           ops));
       });
     }
@@ -1230,6 +1265,152 @@
         el('div', { class: 'row cc-cap-tools' }, instSel, capBtn, capNote), stage);
     }
 
+    // 抓图与裁剪：滚动层的目标图片直接从第二张截图里裁出来，以 base64 PNG 存进方案
+    async function ccGrab(instName) {
+      const r = await api(`/api/instances/${encodeURIComponent(instName)}/screenshot`, { method: 'POST' });
+      return r.image;
+    }
+    const ccImageCache = new Map();
+    function ccLoadImage(src) {
+      if (ccImageCache.has(src)) return Promise.resolve(ccImageCache.get(src));
+      return new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => { ccImageCache.set(src, im); resolve(im); };
+        im.onerror = () => reject(new Error('画面解码失败'));
+        im.src = src;
+      });
+    }
+    async function ccCrop(dataUrl, rect) {
+      const im = await ccLoadImage(dataUrl);
+      const w = Math.max(1, rect[2] - rect[0]), h = Math.max(1, rect[3] - rect[1]);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(im, rect[0], rect[1], w, h, 0, 0, w, h);
+      return c.toDataURL('image/png').split(',')[1];
+    }
+
+    // 滚动层 ①：抓图后单击图上任意一点，作为鼠标停留位置（滚轮就在这里滚）
+    function anchorBlock(step) {
+      const instSel = el('select', { class: 'select' });
+      insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
+      if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
+      const note = el('span', { class: 'small muted',
+        text: step.__anchorImg ? '在图上单击，设定鼠标停留点' : '抓取画面后，在图上单击设定鼠标停留点' });
+      const stage = el('div', { class: 'cc-stage' + (step.__anchorImg ? '' : ' empty') });
+      const img = el('img', { class: 'cc-stage-img', src: step.__anchorImg || '', alt: '鼠标位置参考画面' });
+      const dot = el('div', { class: 'cc-anchor' });
+      const empty = el('div', { class: 'cc-stage-empty', text: '抓取画面后，在图上单击设定鼠标停留点' });
+      img.hidden = !step.__anchorImg; empty.hidden = !!step.__anchorImg; dot.hidden = !step.__anchorImg;
+      stage.append(img, dot, empty);
+      const put = (p) => { dot.style.left = (p[0] / 1280 * 100) + '%'; dot.style.top = (p[1] / 720 * 100) + '%'; };
+      const coord = (e) => {
+        const b = img.getBoundingClientRect();
+        return [Math.max(0, Math.min(1280, Math.round((e.clientX - b.left) * 1280 / b.width))),
+          Math.max(0, Math.min(720, Math.round((e.clientY - b.top) * 720 / b.height)))];
+      };
+      stage.addEventListener('pointerdown', (e) => {
+        if (!step.__anchorImg) return;
+        const p = coord(e);
+        step.scroll.anchor = p; put(p); dot.hidden = false;
+        note.textContent = `鼠标停留点 (${p[0]}, ${p[1]})`;
+        e.preventDefault();
+      });
+      put(step.scroll.anchor);
+      const capBtn = smallBtn('抓取画面', 'refresh', async () => {
+        if (!instSel.value) return toast('请先绑定模拟器', 'err');
+        capBtn.disabled = true; note.textContent = '抓取中…';
+        try {
+          const src = await ccGrab(instSel.value);
+          step.__anchorImg = src; step.__inst = instSel.value; lastCapInst = instSel.value;
+          img.src = src; img.hidden = false; empty.hidden = true; dot.hidden = false;
+          stage.classList.remove('empty');
+          put(step.scroll.anchor);
+          note.textContent = '在图上单击，设定鼠标停留点';
+        } catch (e) { note.textContent = '抓取失败：' + e.message; toast('抓取失败：' + e.message, 'err'); }
+        capBtn.disabled = false;
+      }, 'ghost');
+      return el('div', { class: 'cc-cap' },
+        el('div', { class: 'row cc-cap-tools' }, instSel, capBtn, note), stage);
+    }
+
+    // 滚动层 ②：再抓一张画面，框选出要找的目标图案（裁剪后作为匹配模板）
+    function targetBlock(step) {
+      const instSel = el('select', { class: 'select' });
+      insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
+      if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
+      const note = el('span', { class: 'small muted',
+        text: step.__tplImg ? '在图上拖框，框出要找的目标图案（可重拖）' : '抓取画面后，在图上拖框框出目标图案' });
+      const stage = el('div', { class: 'cc-stage' + (step.__tplImg ? '' : ' empty') });
+      const img = el('img', { class: 'cc-stage-img', src: step.__tplImg || '', alt: '目标图案参考画面' });
+      const sel = el('div', { class: 'cc-sel' });
+      const empty = el('div', { class: 'cc-stage-empty', text: '抓取画面后，在图上拖框框出目标图案' });
+      const preview = el('div', { class: 'cc-tpl' });
+      function paintPreview() {
+        preview.innerHTML = '';
+        if (!step.scroll.template) {
+          preview.appendChild(el('span', { class: 'small muted', text: '目标图片：未设置' }));
+          return;
+        }
+        preview.append(
+          el('img', { class: 'cc-tpl-img', src: 'data:image/png;base64,' + step.scroll.template, alt: '目标图片' }),
+          el('span', { class: 'small muted', text: '目标图片已设置，执行时按它匹配' }));
+      }
+      img.hidden = !step.__tplImg; empty.hidden = !!step.__tplImg; sel.hidden = !step.__tplImg;
+      stage.append(img, sel, empty);
+      const put = (r) => {
+        sel.style.left = (r[0] / 1280 * 100) + '%';
+        sel.style.top = (r[1] / 720 * 100) + '%';
+        sel.style.width = ((r[2] - r[0]) / 1280 * 100) + '%';
+        sel.style.height = ((r[3] - r[1]) / 720 * 100) + '%';
+      };
+      const coord = (e) => {
+        const b = img.getBoundingClientRect();
+        return [Math.max(0, Math.min(1280, Math.round((e.clientX - b.left) * 1280 / b.width))),
+          Math.max(0, Math.min(720, Math.round((e.clientY - b.top) * 720 / b.height)))];
+      };
+      const between = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]),
+        Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+      let origin = null, dragging = false;
+      stage.addEventListener('pointerdown', (e) => {
+        if (!step.__tplImg) return;
+        dragging = true; origin = coord(e);
+        put([origin[0], origin[1], origin[0], origin[1]]);
+        try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        e.preventDefault();
+      });
+      stage.addEventListener('pointermove', (e) => { if (dragging) put(between(origin, coord(e))); });
+      stage.addEventListener('pointerup', async (e) => {
+        if (!dragging) return;
+        dragging = false;
+        const r = between(origin, coord(e));
+        if (r[2] - r[0] < 8 || r[3] - r[1] < 8) { put(step.scroll.template_rect || [0, 0, 0, 0]); return; }
+        step.scroll.template_rect = r; put(r);
+        note.textContent = '裁剪中…';
+        try {
+          step.scroll.template = await ccCrop(step.__tplImg, r);
+          paintPreview();
+          note.textContent = `目标图案已截取 ${r[2] - r[0]}×${r[3] - r[1]}（可重拖）`;
+        } catch (err) { note.textContent = '裁剪失败：' + err.message; }
+      });
+      if (step.scroll.template_rect && step.scroll.template_rect.length === 4) put(step.scroll.template_rect);
+      paintPreview();
+      const capBtn = smallBtn('抓取画面', 'refresh', async () => {
+        if (!instSel.value) return toast('请先绑定模拟器', 'err');
+        capBtn.disabled = true; note.textContent = '抓取中…';
+        try {
+          const src = await ccGrab(instSel.value);
+          step.__tplImg = src; step.__inst = instSel.value; lastCapInst = instSel.value;
+          img.src = src; img.hidden = false; empty.hidden = true; sel.hidden = false;
+          stage.classList.remove('empty');
+          if (step.scroll.template_rect && step.scroll.template_rect.length === 4) put(step.scroll.template_rect);
+          note.textContent = '在图上拖框，框出要找的目标图案（可重拖）';
+        } catch (e) { note.textContent = '抓取失败：' + e.message; toast('抓取失败：' + e.message, 'err'); }
+        capBtn.disabled = false;
+      }, 'ghost');
+      return el('div', { class: 'cc-cap' },
+        el('div', { class: 'row cc-cap-tools' }, instSel, capBtn, note), stage, preview);
+    }
+
     function stepCard(step, i) {
       const card = el('div', { class: 'panel cc-step' });
       const nameInp = el('input', { class: 'input cc-name', value: step.name || '' });
@@ -1280,15 +1461,59 @@
       jumpSel.value = String(step.jump);
       jumpSel.addEventListener('change', () => { step.jump = parseInt(jumpSel.value, 10) || 0; });
 
-      card.append(head, el('div', { class: 'panel-body' },
-        captureBlock(step),
-        field('判定文字（每行一条 · 检测到才点击）', textTa),
+      // 动作类型：直接识别并点击（OCR）/ 滚动寻找并点击（图片匹配）
+      const modeSel = el('select', { class: 'select' },
+        el('option', { value: 'direct', text: '直接识别并点击（看文字）' }),
+        el('option', { value: 'scroll', text: '滚动寻找并点击（找图片）' }));
+      modeSel.value = step.mode === 'scroll' ? 'scroll' : 'direct';
+      modeSel.addEventListener('change', () => { step.mode = modeSel.value; paintSteps(); });
+
+      // 滚动层参数：鼠标停留点由 ① 点击确定，目标图片由 ② 框选确定
+      const sc = step.scroll;
+      const scMethodSel = el('select', { class: 'select' },
+        el('option', { value: 'auto', text: '自动（优先滚轮）' }),
+        el('option', { value: 'wheel', text: '鼠标滚轮' }),
+        el('option', { value: 'drag', text: '手指拖动' }));
+      scMethodSel.value = sc.method;
+      scMethodSel.addEventListener('change', () => { sc.method = scMethodSel.value; });
+      const scDirectionSel = el('select', { class: 'select' },
+        el('option', { value: 'down', text: '向下滚动' }),
+        el('option', { value: 'up', text: '向上滚动' }));
+      scDirectionSel.value = sc.direction;
+      scDirectionSel.addEventListener('change', () => { sc.direction = scDirectionSel.value; });
+      const scWheelInp = el('input', { class: 'input', type: 'number', min: '1', max: '30', value: String(sc.wheel) });
+      scWheelInp.addEventListener('input', () => { sc.wheel = Math.round(Math.max(1, Math.min(ccNum(scWheelInp.value, 5), 30))); });
+      const scIntervalInp = el('input', { class: 'input', type: 'number', min: '0.2', max: '5', step: '0.1', value: String(sc.interval) });
+      scIntervalInp.addEventListener('input', () => { sc.interval = Math.round(Math.max(0.2, Math.min(ccNum(scIntervalInp.value, 0.8), 5)) * 100) / 100; });
+      const scScoreInp = el('input', { class: 'input', type: 'number', min: '0.5', max: '0.99', step: '0.01', value: String(sc.threshold) });
+      scScoreInp.addEventListener('input', () => { sc.threshold = Math.round(Math.max(0.5, Math.min(ccNum(scScoreInp.value, 0.8), 0.99)) * 100) / 100; });
+      const scTimeoutInp = el('input', { class: 'input', type: 'number', min: '1', max: '120', value: String(sc.timeout) });
+      scTimeoutInp.addEventListener('input', () => { sc.timeout = Math.round(Math.max(1, Math.min(ccNum(scTimeoutInp.value, 15), 120))); });
+
+      const body = el('div', { class: 'panel-body' }, field('动作类型', modeSel));
+      if (step.mode === 'scroll') {
+        body.append(
+          el('div', { class: 'cc-hint', text: '① 抓图后单击图上任意位置 = 鼠标停留点；② 再抓一张画面，框选要点击的目标图案。执行时一边滚动一边找，找到就点它。滚动方式选「自动」时，能把滚轮发进模拟器就用滚轮，否则自动改成手指拖动（adb/minitouch 控制方式一般走拖动）。' }),
+          anchorBlock(step),
+          targetBlock(step),
+          el('div', { class: 'cc-grid cc-grid-3' },
+            field('滚动方式', scMethodSel), field('滚动方向', scDirectionSel), field('每次滚动格数', scWheelInp)),
+          el('div', { class: 'cc-grid cc-grid-3' },
+            field('滚动间隔（秒）', scIntervalInp), field('目标匹配度', scScoreInp), field('寻找超时（秒）', scTimeoutInp)));
+      } else {
+        body.append(
+          captureBlock(step),
+          field('判定文字（每行一条 · 检测到才点击）', textTa),
+          el('div', { class: 'cc-grid cc-grid-3' },
+            field('匹配', matchSel), field('置信度', scoreInp)));
+      }
+      body.append(
+        field('点击后延时（秒）', delayInp),
         el('div', { class: 'cc-grid cc-grid-3' },
-          field('匹配', matchSel), field('置信度', scoreInp), field('点击后延时（秒）', delayInp)),
-        el('div', { class: 'cc-grid cc-grid-3' },
-          field('本层重复', repSel), countField, field('循环间隔（秒）', gapInp)),
-        recheckBox,
-        field('执行后跳转', jumpSel)));
+          field('本层重复', repSel), countField, field('循环间隔（秒）', gapInp)));
+      if (step.mode !== 'scroll') body.append(recheckBox);
+      body.append(field('执行后跳转', jumpSel));
+      card.append(head, body);
       return card;
     }
     function paintSteps() {
@@ -2017,8 +2242,8 @@
     const clickCard = el('div', { class: 'task-card', style: 'margin-bottom:12px' },
       el('div', { class: 'tc-top' },
         el('span', { class: 'tc-name', text: '自定义点击' }),
-        el('span', { class: 'badge badge-gold', text: 'OCR + 拟人点击' })),
-      el('div', { class: 'tc-desc', text: 'OCR 判定 → 框选点击 → 延时，逐层执行。' }),
+        el('span', { class: 'badge badge-gold', text: 'OCR / 找图 + 拟人点击' })),
+      el('div', { class: 'tc-desc', text: '每层可选「直接识别并点击」（OCR 判定）或「滚动寻找并点击」（边滚边找图），命中后拟人点击。' }),
       el('div', { class: 'tc-ops' }, btn('选择 / 新建方案', 'plus', () => { closeModal(); openCustomClickLibrary(); }, 'primary sm')),
     );
     const cats = ['全部'].concat((state.catalog ? state.catalog.categories : []).map((c) => c.key));

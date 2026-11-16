@@ -693,7 +693,7 @@ body.dock-resizing .logdock { transition: none; }
 .cc-stage.empty{background:var(--panel-3);cursor:default;min-height:150px;display:flex;align-items:center;justify-content:center}
 .cc-stage-empty{font-size:12px;color:var(--text-3);padding:20px;text-align:center}
 /* 类选择器会盖掉 UA 的 [hidden]{display:none}，必须显式兜住 */
-.cc-stage-empty[hidden],.cc-stage-img[hidden],.cc-sel[hidden]{display:none}
+.cc-stage-empty[hidden],.cc-stage-img[hidden],.cc-sel[hidden],.cc-anchor[hidden]{display:none}
 .cc-stage-img{display:block;width:100%;height:auto;pointer-events:none}
 .cc-sel{position:absolute;border:2px solid var(--accent);background:rgba(184,73,31,.18);box-shadow:0 0 0 9999px rgba(0,0,0,.30);pointer-events:none;min-width:2px;min-height:2px}
 /* .field 自身是 display:flex，会盖掉 UA 的 [hidden]，必须显式兜住 */
@@ -701,3 +701,11 @@ body.dock-resizing .logdock { transition: none; }
 .cc-check{display:flex;align-items:center;gap:6px;margin:0 0 12px;font-size:12px;color:var(--text-2);cursor:pointer;user-select:none}
 .cc-check input{margin:0;cursor:pointer}
 .cc-grid .row input{width:96px}
+/* 滚动寻找并点击：鼠标停留点标记 + 目标图片预览 */
+.cc-hint{font-size:12px;line-height:1.6;color:var(--text-3);background:var(--panel-3);border:1px dashed var(--line-2);border-radius:6px;padding:8px 10px;margin:0 0 10px}
+.cc-anchor{position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;border:2px solid var(--accent);background:rgba(184,73,31,.22);box-shadow:0 0 0 9999px rgba(0,0,0,.18);pointer-events:none}
+.cc-anchor::before,.cc-anchor::after{content:'';position:absolute;background:var(--accent)}
+.cc-anchor::before{left:50%;top:-9px;width:2px;height:9px;margin-left:-1px}
+.cc-anchor::after{top:50%;left:-9px;height:2px;width:9px;margin-top:-1px}
+.cc-tpl{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+.cc-tpl-img{max-height:84px;max-width:260px;border:1px solid var(--line-2);border-radius:6px;background:#000}

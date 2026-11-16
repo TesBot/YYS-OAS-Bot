@@ -317,6 +317,232 @@ def run_battle(gb, cfg, device, timeout: float = BATTLE_TIMEOUT) -> bool:
         device.screenshot = original
 
 
+# ───────────────────────── 滚动寻找并点击 ─────────────────────────
+# 「直接识别并点击」靠 OCR 文字判定，「滚动寻找并点击」靠目标图片匹配：
+# 先把鼠标停在用户指定的位置（anchor），一边滚动一边截图比对，命中后再点目标图片。
+# 滚动优先投递真实滚轮消息（Win32 WM_MOUSEWHEEL，MuMu/夜神/雷电的客户区句柄都能收），
+# 拿不到窗口句柄时退回引擎自带 swipe（minitouch/ADB/uiautomator2/scrcpy），两者都复用引擎既有触控实现。
+WM_MOUSEMOVE = 0x0200
+WM_MOUSEWHEEL = 0x020A
+WHEEL_DELTA = 120            # Win32 单格滚轮增量
+SCROLL_DEFAULT_ANCHOR = (640, 400)
+SCROLL_DRAG_SPAN = 260       # 拖动兜底时的滑动距离（像素）
+SCROLL_METHOD_LABEL = {"auto": "自动", "wheel": "滚轮", "drag": "拖动"}
+
+
+def as_point(value, default=SCROLL_DEFAULT_ANCHOR) -> tuple[int, int]:
+    """鼠标停留点：clamp 进 1280x720。"""
+    try:
+        x, y = (int(round(float(v))) for v in (value or default)[:2])
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(x, 1279)), max(0, min(y, 719))
+
+
+def as_scroll(value) -> dict:
+    """滚动参数规范化；缺省值就是 UI 上的默认值。"""
+    raw = value if isinstance(value, dict) else {}
+
+    def num(key, default, low, high):
+        try:
+            n = float(raw.get(key, default))
+        except (TypeError, ValueError):
+            n = float(default)
+        return max(low, min(n, high))
+
+    return {
+        "anchor": as_point(raw.get("anchor")),
+        "direction": "up" if raw.get("direction") == "up" else "down",
+        "wheel": int(round(num("wheel", 5, 1, 30))),
+        "interval": num("interval", 0.8, 0.2, 5.0),
+        "timeout": num("timeout", 15.0, 1.0, 120.0),
+        "threshold": num("threshold", 0.8, 0.5, 0.99),
+        "method": raw.get("method") if raw.get("method") in ("auto", "wheel", "drag") else "auto",
+        "template": str(raw.get("template") or ""),
+    }
+
+
+def decode_template(value):
+    """目标图片（base64 PNG，可带 data: 前缀）→ BGR ndarray；无效返回 None。"""
+    import base64
+
+    import cv2
+    import numpy as np
+
+    data = str(value or "").strip()
+    if not data:
+        return None
+    if data.startswith("data:") and "," in data:
+        data = data.split(",", 1)[1]
+    try:
+        buf = np.frombuffer(base64.b64decode(data, validate=False), np.uint8)
+        image = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    except Exception:  # noqa: BLE001 - 用户可能存了非图片内容
+        return None
+    return image if image is not None and image.size else None
+
+
+def match_template(image, template) -> tuple[float, int, int]:
+    """整屏找目标图片，返回 (相似度, 命中中心 x, 命中中心 y)。"""
+    import cv2
+    import numpy as np
+
+    screen = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+    gray = template if template.ndim == 2 else cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    th, tw = gray.shape[:2]
+    if th > screen.shape[0] or tw > screen.shape[1]:
+        return 0.0, 0, 0
+    result = cv2.matchTemplate(screen, gray, cv2.TM_CCOEFF_NORMED)
+    _, score, _, loc = cv2.minMaxLoc(result)
+    return float(score), int(loc[0] + tw / 2), int(loc[1] + th / 2)
+
+
+def window_handle(device):
+    """模拟器客户区句柄；可用句柄位置与引擎 swipe_window_message 的取值一致。
+
+    只有 window_message 控制方式下引擎才会创建窗口句柄对象，adb/minitouch 走的是
+    adb shell，属于正常情况（返回 None，调用方退回拖动滚动）。
+    """
+    try:
+        handles = [h for h in (device.control_handle_list or []) if h]
+    except Exception:  # noqa: BLE001 - 非 Windows 后端没有窗口句柄
+        return None
+    if not handles:
+        return None
+    if len(handles) == 1:  # 雷电
+        return handles[0]
+    if len(handles) == 2:  # MuMu
+        return handles[1]
+    return handles[3] if len(handles) > 3 else handles[-1]  # 夜神
+
+
+def _user32():
+    import ctypes
+    import os
+
+    if os.name != "nt":
+        return None
+    user32 = ctypes.windll.user32
+    if not getattr(_user32, "ready", False):
+        user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                       ctypes.c_size_t, ctypes.c_ssize_t]
+        user32.PostMessageW.restype = ctypes.c_bool
+        user32.GetClientRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        user32.ClientToScreen.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        _user32.ready = True
+    return user32
+
+
+def _client_to_screen(hwnd, x, y):
+    """客户区坐标 → 屏幕坐标（WM_MOUSEWHEEL 的 lParam 用的是屏幕坐标）。"""
+    import ctypes
+    from ctypes import wintypes
+
+    point = wintypes.POINT(int(x), int(y))
+    ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))
+    return int(point.x), int(point.y)
+
+
+def wheel_scroll(device, anchor, direction, notches) -> bool:
+    """把鼠标停在 anchor 上逐格滚动；只投递移动 + 滚轮消息，不产生点击。"""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = _user32()
+    if user32 is None:
+        return False
+    hwnd = window_handle(device)
+    if not hwnd:
+        return False
+    rect = wintypes.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    cw, ch = max(1, rect.right), max(1, rect.bottom)  # 客户区可能被缩放，不是 1280x720
+    x, y = anchor
+    client_x = int(round(x * cw / 1280.0))
+    client_y = int(round(y * ch / 720.0))
+    screen_x, screen_y = _client_to_screen(hwnd, client_x, client_y)
+    move_lparam = ((client_y & 0xFFFF) << 16) | (client_x & 0xFFFF)
+    wheel_lparam = ((screen_y & 0xFFFF) << 16) | (screen_x & 0xFFFF)
+    delta = -WHEEL_DELTA if direction == "down" else WHEEL_DELTA
+    wparam = (delta & 0xFFFF) << 16
+    ok = True
+    for _ in range(max(1, int(notches))):
+        user32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, move_lparam)   # 先让光标落在该点
+        if not user32.PostMessageW(hwnd, WM_MOUSEWHEEL, wparam, wheel_lparam):
+            ok = False
+            break
+        time.sleep(random.uniform(0.05, 0.11))  # 逐格 + 抖动，避免一次甩到底
+    return ok
+
+
+def drag_scroll(device, anchor, direction, span=SCROLL_DRAG_SPAN) -> bool:
+    """拖动模拟滚动（滚动向下 = 手指上滑）；按当前 control_method 直接调引擎 swipe。"""
+    x, y = anchor
+    half = max(40, int(span) // 2)
+    y1 = y + half if direction == "down" else y - half
+    y2 = y - half if direction == "down" else y + half
+    y1, y2 = max(10, min(y1, 709)), max(10, min(y2, 709))
+    if abs(y2 - y1) < 20:
+        return False
+    p1, p2 = (int(x), int(y1)), (int(x), int(y2))
+    method = getattr(getattr(device.config.script, "device", None), "control_method", "minitouch")
+    try:
+        if method == "minitouch":
+            device.swipe_minitouch(p1, p2)
+        elif method == "window_message":
+            device.swipe_window_message(p1, p2)
+        elif method == "uiautomator2":
+            device.swipe_uiautomator2(p1, p2, duration=0.3)
+        elif method == "scrcpy":
+            device.swipe_scrcpy(p1, p2)
+        else:
+            device.swipe_adb(p1, p2, duration=0.3)
+    except Exception as exc:  # noqa: BLE001 - 单次滚动失败不该让整层直接崩
+        log(f"  … 拖动滚动失败：{type(exc).__name__}: {exc}")
+        return False
+    return True
+
+
+def run_scroll_search(device, opt: dict, tag: str) -> tuple[bool, str]:
+    """一边滚动一边找图；命中即点目标中心。返回 (是否成功, 说明)。"""
+    from module.base.utils import random_rectangle_point
+
+    template = decode_template(opt.get("template"))
+    if template is None:
+        return False, "未设置目标图片：编辑时先抓图，再在图上框选要点击的图案"
+    deadline = time.monotonic() + opt["timeout"]
+    best, ticks, method = 0.0, 0, opt["method"]
+    log(f"  滚动寻找：鼠标停在 {opt['anchor']}，{'向上' if opt['direction'] == 'up' else '向下'}"
+        f" ×{opt['wheel']} 格 / {opt['interval']:g}s，超时 {opt['timeout']:g}s")
+    while True:
+        score, cx, cy = match_template(device.screenshot(), template)
+        best = max(best, score)
+        if score >= opt["threshold"]:
+            x, y = random_rectangle_point((cx - 8, cy - 8, cx + 8, cy + 8))
+            log(f"  ✓ {tag} 找到目标（相似度 {score:.2f}）→ 点击 ({x}, {y})")
+            device.click(x, y, control_check=False, control_name="CUSTOM_SCROLL")
+            return True, f"相似度 {score:.2f}"
+        if time.monotonic() >= deadline:
+            break
+        ticks += 1
+        if method == "drag":
+            ok = drag_scroll(device, opt["anchor"], opt["direction"])
+        else:
+            ok = wheel_scroll(device, opt["anchor"], opt["direction"], opt["wheel"])
+            if ok:
+                log(f"  … 滚轮 {opt['direction'] == 'up' and '上' or '下'}滚 {opt['wheel']} 格")
+            elif method == "wheel":
+                return False, "当前控制方式拿不到模拟器窗口句柄，滚轮发不出去；把滚动方式改成「拖动」即可"
+            else:  # auto：拿不到句柄就退回拖动，两条路都能滚动
+                log("  … 控制方式为 adb/minitouch，拿不到窗口句柄，改用拖动滚动")
+                method = "drag"
+                ok = drag_scroll(device, opt["anchor"], opt["direction"])
+        if not ok:
+            return False, "滚动动作执行失败"
+        device.sleep(opt["interval"])
+    return False, f"滚动 {ticks} 次仍未找到目标（最高相似度 {best:.2f}）"
+
+
 def run_plan(config_name: str, plan: dict) -> bool:
     from module.base.protect import random_sleep
     from module.base.utils import random_rectangle_point
@@ -377,20 +603,44 @@ def run_plan(config_name: str, plan: dict) -> bool:
         rep = as_repeat(st.get("repeat"))
         total = 1 if rep["mode"] == "once" else (rep["count"] if rep["mode"] == "count" else None)
         loop_desc = "仅一次" if total == 1 else (f"{total} 轮" if total else "一直循环")
-        log(f"第 {i}/{len(steps)} 层「{name}」：等待文字 {texts or '（无条件）'} "
-            f"({match})，识别区 {roi}，点击区 {rect}，本层 {loop_desc}，间隔 {rep['gap']:g}s")
+        scroll_mode = (st.get("mode") or "direct") == "scroll"
+        scroll_opt = as_scroll(st.get("scroll")) if scroll_mode else {}
+        if scroll_mode:
+            log(f"第 {i}/{len(steps)} 层「{name}」：滚动寻找并点击，鼠标点 {scroll_opt['anchor']}，"
+                f"{'向上' if scroll_opt['direction'] == 'up' else '向下'}滚动 ×{scroll_opt['wheel']} 格"
+                f"（{SCROLL_METHOD_LABEL[scroll_opt['method']]}），"
+                f"匹配度 {scroll_opt['threshold']:g}，寻找超时 {scroll_opt['timeout']:g}s，"
+                f"本层 {loop_desc}，间隔 {rep['gap']:g}s")
+        else:
+            log(f"第 {i}/{len(steps)} 层「{name}」：等待文字 {texts or '（无条件）'} "
+                f"({match})，识别区 {roi}，点击区 {rect}，本层 {loop_desc}，间隔 {rep['gap']:g}s")
 
-        engine_ocr = build_ocr(roi, score)  # 每层的识别区/阈值固定，模型全局复用
-        cache = FrameOCR(device, engine_ocr, roi)
-        if maybe_idle(device, idle, f"第 {i} 层前", idle_stats):
+        # 滚动层不看文字，OCR 模型按需构建，避免白载一次识别器
+        engine_ocr = None if scroll_mode else build_ocr(roi, score)
+        cache = None if scroll_mode else FrameOCR(device, engine_ocr, roi)
+        if maybe_idle(device, idle, f"第 {i} 层前", idle_stats) and cache is not None:
             cache.invalidate()
         rounds = 0
         while True:
             rounds += 1
             tag = f"第 {i}/{len(steps)} 层" + (f" 第 {rounds} 轮" if (total is None or total > 1) else "")
-            if maybe_idle(device, idle, f"{tag} 前", idle_stats):
+            if maybe_idle(device, idle, f"{tag} 前", idle_stats) and cache is not None:
                 cache.invalidate()
-            if rep["recheck"] or rounds == 1:
+            if scroll_mode:
+                # 滚动层：鼠标停点 + 滚轮 + 逐帧找图，命中后自己点目标中心
+                alive, handled = handoff_battle(tag)
+                if not alive:
+                    print("=== RESULT: False ===", flush=True)
+                    return False
+                if handled:
+                    continue
+                device.sleep(before)
+                ok, why = run_scroll_search(device, scroll_opt, tag)
+                if not ok:
+                    log(f"  ✗ {tag} {why}")
+                    print("=== RESULT: False ===", flush=True)
+                    return False
+            elif rep["recheck"] or rounds == 1:
                 started = time.monotonic()
                 last_seen: list[str] = []
                 while True:
@@ -434,15 +684,17 @@ def run_plan(config_name: str, plan: dict) -> bool:
                     cache.invalidate()
                     continue
 
-            device.sleep(before)
-            x, y = random_rectangle_point(rect)  # 矩形内正态随机落点，偏中心
-            log(f"  {tag} 拟人点击 ({x}, {y})")
-            # control_check=False：自研循环点同名太多次会被引擎 GameTooManyClickError 误杀。
-            # 点击本身仍走 control_method（默认 minitouch，自带随机压力/时长/微移）。
-            device.click(x, y, control_check=False, control_name="CUSTOM_CLICK")
+            if not scroll_mode:
+                device.sleep(before)
+                x, y = random_rectangle_point(rect)  # 矩形内正态随机落点，偏中心
+                log(f"  {tag} 拟人点击 ({x}, {y})")
+                # control_check=False：自研循环点同名太多次会被引擎 GameTooManyClickError 误杀。
+                # 点击本身仍走 control_method（默认 minitouch，自带随机压力/时长/微移）。
+                device.click(x, y, control_check=False, control_name="CUSTOM_CLICK")
             random_sleep(probability=0.05)  # 引擎概率防封长休眠
             device.sleep(after)
-            cache.invalidate()  # 点击会改变画面，下一轮必须重新识别
+            if cache is not None:
+                cache.invalidate()  # 点击/滚动会改变画面，下一轮必须重新识别
             maybe_idle(device, idle, f"{tag} 后", idle_stats)
 
             if total is not None and rounds >= total:
