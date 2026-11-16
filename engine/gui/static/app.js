@@ -1115,6 +1115,8 @@
       plan_id: plan.id, plan_name: plan.name,
     }]);
     await saveFlow(flow, true);
+    // silent 保存不会重绘；这里必须手动 render，否则步骤列表看不见新加的一层
+    render();
   }
 
   function openCustomClickLibrary(opts) {

@@ -657,7 +657,7 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 def version():
     """安装包版本。升级后用来确认用户实际跑的是哪一份 bridge，而不是旧包。"""
     # 与控制台版本对齐：这个端点就是用来确认用户实际跑的是哪一份 bridge 的
-    return {"version": "1.1.26", "build": "scroll-find"}
+    return {"version": "1.1.27", "build": "scroll-find"}
 
 
 @app.get("/api/health")
