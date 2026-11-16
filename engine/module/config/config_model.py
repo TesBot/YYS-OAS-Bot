@@ -39,7 +39,9 @@ from tasks.Tako.config import Tako
 from tasks.AutoCheckinBigGod.config import AutoCheckinBigGod
 # ----------------------------------------------------------------------------------------------------------------------
 from tasks.Orochi.config import Orochi
-from tasks.OrochiMoans.config import OrochiMoans
+# 注意：`tasks/OrochiMoans`（御魂·悲鸣）是上游遗留的空壳——只有 config.py 与空的
+# assets.py，没有 script_task.py，一旦被调度就必然 FileNotFoundError。悲鸣本身就是
+# `Orochi` 的层数选项（Layer.ELEVEN = '悲鸣'，且是默认层），所以不再单独注册任务。
 from tasks.Sougenbi.config import Sougenbi
 from tasks.FallenSun.config import FallenSun
 from tasks.EternitySea.config import EternitySea
@@ -112,7 +114,6 @@ class ConfigModel(ConfigBase):
 
     # 这些是刷御魂的
     orochi: Orochi = Field(default_factory=Orochi)
-    orochi_moans: OrochiMoans = Field(default_factory=OrochiMoans)
     sougenbi: Sougenbi = Field(default_factory=Sougenbi)
     fallen_sun: FallenSun = Field(default_factory=FallenSun)
     eternity_sea: EternitySea = Field(default_factory=EternitySea)
