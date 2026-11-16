@@ -1,14 +1,15 @@
 {
   "name": "oas-studio",
   "productName": "OAS Studio",
-  "version": "1.1.23",
+  "version": "1.1.24",
   "description": "阴阳师自动化控制台 · 多实例管理与任务编排（引擎解耦版）",
   "main": "main.js",
   "author": "OAS Studio",
   "license": "GPL-3.0",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis"
+    "postinstall": "node scripts/patch-nsis-template.mjs",
+    "dist": "node scripts/patch-nsis-template.mjs && electron-builder --win nsis"
   },
   "devDependencies": {
     "electron": "^33.2.0",

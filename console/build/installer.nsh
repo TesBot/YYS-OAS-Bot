@@ -1,38 +1,53 @@
 ; OAS Studio 安装器定制
 ;
-; 背景（两轮踩坑后的结论）：
-;   1) 桥接服务 python 的 exe 在 %LOCALAPPDATA%\OAS Studio\runtime\python，
-;      路径不在安装目录里，默认 CHECK_APP_RUNNING（只看 exe 路径前缀）看不见它；
-;      而它的工作目录是 $INSTDIR\resources\engine，开着 bridge.py 等文件，
-;      旧卸载器删不掉 → 返回非 0 → installUtil.nsh 的 uninstallOldVersion
-;      重试 5 次后弹「$(appCannotBeClosed)」=「无法关闭」。
-;   2) 但「命令行里出现 $INSTDIR」这个判据太宽：卸载器自己是带着
-;      `_?=$INSTDIR` 运行的，安装器/卸载器都会命中自己 → 自锁 45 秒，
-;      还会把自己杀掉（退出码非 0 → 又触发上面那个弹窗）。
+; 背景（三轮踩坑后的结论）：
+;   1) 「无法关闭/请点重试」弹窗有两个来源，都在 electron-builder 模板里：
+;      a) installUtil.nsh 的 uninstallOldVersion：旧卸载器退出码非 0 → 重试 5 次 → 弹窗；
+;      b) include/installer.nsh 的 extractUsing7za：解包后用 CopyFiles 拷入 $INSTDIR，
+;         任一目标文件被占用 → 重试 5 次 → 弹窗。引擎全部文件都在 app-64.7z 里，
+;         走的就是 b) 这条路。模板本身已通过 scripts/patch-nsis-template.mjs
+;         打补丁移除所有弹窗（见该脚本）。
+;   2) 桥接服务 python 的 exe 在 %LOCALAPPDATA%\OAS Studio\runtime\python，
+;      路径不在安装目录里。而 OCR 是 multiprocessing 子进程，命令行只有
+;      `-c from multiprocessing...`，不含安装目录 → 按「命令行含 $INSTDIR」
+;      的判据看不见它们；adbutils 拉起的 adb fork-server 也是孤儿存活
+;      （工作目录锁定在 $INSTDIR\resources\engine）。
+;      因此判据改为「exe 路径在安装目录或 %LOCALAPPDATA%\OAS Studio 下」，
+;      覆盖 Electron 全家、runtime python、adb、以及任何未来新增的孤儿。
+;   3) 判据太宽的历史教训：卸载器/安装器的命令行或路径也可能命中关键词，
+;      出现自锁或自杀。排除规则：
+;      - 路径以 ${UNINSTALL_FILENAME} 结尾 → 不杀（独立卸载器自己）；
+;      - ProcessId == $PID → 不杀（探测/清理用的 powershell 自己，其命令行
+;        里嵌着 $INSTDIR 文本，会自命中）。
 ;
-; 现在的判据精确到「谁」：
-;     (名字 == OAS Studio.exe 且 exe 路径在 $INSTDIR 下)      ← Electron 主进程 + GPU/渲染子进程
-;  或 (名字 == python.exe  且 命令行里出现 $INSTDIR)          ← 引擎桥接服务
-; 卸载器（Uninstall OAS Studio.exe）、安装包自身、old-uninstaller.exe 都不会命中。
-;
-; 全程不弹任何对话框：静默等待 + 强杀循环，45 秒仍不行才继续安装。
+; 全程不弹任何对话框：静默等待 + 强杀循环，45 秒仍不行才继续安装；
+; 删不掉的文件跳过；被占用的目标文件由模板补丁降级为直接解压（尽力而为）。
 
 !echo "OAS-INSTALLER-PATCH-ACTIVE"
+
+; 进程命中判据（PowerShell 谓词，detect/kill 共用）：
+;   命中 = exe 路径以 $INSTDIR 或 %LOCALAPPDATA%\${PRODUCT_FILENAME} 开头
+;          且 exe 文件名不是卸载器
+;       或 (python/pythonw 且 命令行含 $INSTDIR 或 ${PRODUCT_FILENAME}\runtime)
+;   排除 = 卸载器自身、当前 powershell 进程
+!macro oas_pred
+($$p=$$_.Path; $$c=$$_.CommandLine; $$h=$$false; if ($$p -and -not $$p.EndsWith('${UNINSTALL_FILENAME}')) { if ($$p.StartsWith('$INSTDIR','CurrentCultureIgnoreCase') -or $$p.StartsWith('$LOCALAPPDATA\${PRODUCT_FILENAME}','CurrentCultureIgnoreCase')) { $$h=$$true } }; if (-not $$h -and ($$_.Name -eq 'python.exe' -or $$_.Name -eq 'pythonw.exe') -and $$c -and ($$c -like '*$INSTDIR*' -or $$c -like '*${PRODUCT_FILENAME}\runtime*')) { $$h=$$true }; if ($$h -and $$_.ProcessId -eq $$PID) { $$h=$$false }; $$h)
+!macroend
 
 ; 探测：$R0 == 0 表示还有残留，!= 0 表示干净
 !macro oas_detect
   ${if} $IsPowerShellAvailable == 0
-    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -C "if ((Get-CimInstance Win32_Process | ? { ($$_.Name -eq '${APP_EXECUTABLE_FILENAME}' -and $$_.Path -and $$_.Path.StartsWith('$INSTDIR','CurrentCultureIgnoreCase')) -or ($$_.Name -eq 'python.exe' -and $$_.CommandLine -like '*$INSTDIR*') }).Count -gt 0) { exit 0 } else { exit 1 }"`
+    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -C "if ((Get-CimInstance Win32_Process | ? { !insertmacro oas_pred }).Count -gt 0) { exit 0 } else { exit 1 }"`
   ${else}
     nsExec::Exec `"$CmdPath" /C tasklist /FI "IMAGENAME eq ${APP_EXECUTABLE_FILENAME}" /FO CSV /NH | "$SYSDIR\findstr.exe" /B /I /C:"\"${APP_EXECUTABLE_FILENAME}\""`
   ${endIf}
   Pop $R0
 !macroend
 
-; 强杀：只结束上面那两类进程
+; 强杀：结束所有命中进程
 !macro oas_kill
   ${if} $IsPowerShellAvailable == 0
-    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -C "Get-CimInstance Win32_Process | ? { ($$_.Name -eq '${APP_EXECUTABLE_FILENAME}' -and $$_.Path -and $$_.Path.StartsWith('$INSTDIR','CurrentCultureIgnoreCase')) -or ($$_.Name -eq 'python.exe' -and $$_.CommandLine -like '*$INSTDIR*') } | % { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"`
+    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -C "Get-CimInstance Win32_Process | ? { !insertmacro oas_pred } | % { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"`
     Pop $R0
   ${endIf}
   nsExec::Exec `taskkill /F /IM "${APP_EXECUTABLE_FILENAME}"`
@@ -46,8 +61,6 @@
   ; 注：不要在这里读注册表做「清理残留卸载登记」的自愈。
   ; 本宏在卸载器构建阶段也会被引用，那时 installUtil.nsh 尚未 include，
   ; GetInQuotes / GetFileParent 都不存在 → makensis 直接 abort。
-  ; 而且实测旧卸载器即使删不掉文件，也会先清掉自己的注册表登记，
-  ; 所以「登记还在、exe 没了」这种情况基本不会出现。
 
   DetailPrint "OAS: 检查上次的实例是否已完全退出…"
   StrCpy $R1 0
@@ -66,7 +79,7 @@
 
     ; 45 秒（90 × 500ms）还不行就放弃等待，直接装。
     ${if} $R1 >= 90
-      DetailPrint "OAS: 等待超时，继续安装（如有锁文件会提示写入失败）。"
+      DetailPrint "OAS: 等待超时，继续安装（残留文件会被尽力覆盖）。"
       Goto oas_wait_done
     ${endIf}
 
@@ -81,19 +94,18 @@
 ; ---------------------------------------------------------------------------
 ; 覆盖更新/卸载的文件删除策略（替换默认实现）
 ;
-; 背景（1.1.22 实测踩坑）：
+; 背景（1.1.22/1.1.23 实测踩坑）：
 ;   默认实现（electron-builder 26 atomicRMDir）在覆盖更新时把整个安装目录
 ;   逐文件 Rename 到 $PLUGINSDIR\old-install，成功后旧文件随安装器退出被
 ;   丢弃 —— 两个后果：
 ;     1) config 下的用户数据（实例 oas*.json、自定义方案 gui_*.json、
 ;        deploy.yaml）被一起搬走清空，更新一次丢一次；
-;     2) 任何一个文件被占用（杀进程后的句柄残留、杀毒/索引服务的瞬时锁，
-;        进程检查根本看不见）→ 整体回滚 Abort → 退出码非 0 → 重试 5 次
+;     2) 任何一个文件被占用 → 整体回滚 Abort → 退出码非 0 → 重试 5 次
 ;        → 弹「无法关闭 OAS Studio / 请点重试」——即使用户早就关了程序。
 ;
 ; 这里的策略：
-;   - 直接 RMDir /r 删除，个别被占用的文件忽略错误留在原地（它们要么是
-;     日志、要么是即将被新文件覆盖的程序文件，不影响安装结果）；
+;   - 直接 RMDir /r 删除，多轮重试兜住「杀进程后句柄延迟释放」的窗口；
+;     个别仍被占用的文件忽略错误留在原地（由模板补丁的尽力覆盖兜底）；
 ;   - 覆盖更新时先把 config 用户数据搬到插件临时目录，删完再原位放回；
 ;   - 卸载（非更新）不备份，用户数据随目录清理。
 !macro customRemoveFiles
@@ -107,6 +119,10 @@
 
   SetOutPath $TEMP
   DetailPrint "OAS: 删除旧版本文件（被占用的文件会跳过，不影响安装）…"
+  RMDir /r $INSTDIR
+  Sleep 500
+  RMDir /r $INSTDIR
+  Sleep 1000
   RMDir /r $INSTDIR
 
   ${if} ${isUpdated}
