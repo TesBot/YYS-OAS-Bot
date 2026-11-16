@@ -276,30 +276,28 @@ body.electron .app { height: calc(100vh - 40px); }
 .stat .v small { font-size: 12px; font-weight: 400; color: var(--text-3); margin-left: 4px; }
 .stat .m { font-size: 11.5px; color: var(--text-3); }
 
-/* 账号卡片 */
+/* 账号卡片：两行紧凑布局（谁 / 在哪 + 两个动作） */
 .acct {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
   position: relative; transition: border-color .16s, box-shadow .16s;
 }
 .acct:hover { border-color: var(--line-2); box-shadow: 0 2px 10px rgba(36,33,29,.06); }
-.acct-top { display: flex; align-items: center; gap: 11px; }
+.acct-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.acct-row-meta { font-size: 11.5px; flex-wrap: wrap; gap: 5px 7px; }
 .avatar {
-  width: 38px; height: 38px; border-radius: 10px; flex: none;
+  width: 28px; height: 28px; border-radius: 8px; flex: none;
   display: flex; align-items: center; justify-content: center;
-  font-size: 15px; font-weight: 600; color: #97401d;
+  font-size: 13px; font-weight: 600; color: #97401d;
   background: linear-gradient(150deg, #f8e6da, #f0d6c4);
   border: 1px solid #e6c6b2;
 }
 .avatar.sub { background: linear-gradient(150deg, #f7f0dc, #ece0c2); border-color: #ddcda8; color: #7a5f20; }
-.acct-id { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.acct-id strong { font-size: 14px; }
-.acct-id span { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); }
-.acct-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; font-size: 11.5px; }
-.acct-meta div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.acct-meta .k { color: var(--text-3); }
-.acct-meta .v { color: var(--text-2); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acct-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.acct-name { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-server { font-size: 11.5px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-serial { font-family: var(--mono); color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-act-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+.acct-actions { display: flex; gap: 4px; flex: none; }
 
 /* 步骤行 */
 /* 编排：左栏「账号 → 多份编排」，右栏选中编排的步骤 */
@@ -424,7 +422,6 @@ body.electron .app { height: calc(100vh - 40px); }
 .step-line2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-3); }
 .step-line2 .kv { font-family: var(--mono); color: var(--text-2); }
 .step-ops { display: flex; align-items: center; gap: 2px; }
-.step-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; }
 
 .duo-split { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 2px; }
 .duo-lane {
@@ -672,18 +669,6 @@ body.dock-resizing .logdock { transition: none; }
 .popup-name { display: flex; align-items: center; gap: 8px; min-width: 220px; }
 .popup-ops { flex: 1; display: flex; align-items: center; gap: 8px; }
 .popup-head { color: var(--text-3); font-size: 12px; padding: 2px 0 8px; border-bottom: 1px solid var(--line); }
-
-/* 账号卡片：当前状态行 */
-.acct-act {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; margin: 10px 0 2px; border-radius: 8px;
-  background: var(--panel-2); border: 1px solid var(--line);
-  min-height: 34px;
-}
-.acct-act-run { border-color: rgba(184,73,31,.28); background: rgba(184,73,31,.05); }
-.acct-act-idle { border-style: dashed; }
-.acct-act-off { border-color: rgba(176,42,48,.24); background: rgba(176,42,48,.05); }
-
 
 /* 多实例日志：标题处实例切换 + 自动滚动开关 */
 .dock-tabs{display:flex;gap:4px;margin-left:10px;flex-wrap:wrap;max-width:46%;overflow-x:auto}
