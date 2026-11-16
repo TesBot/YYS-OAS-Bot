@@ -77,3 +77,41 @@
   oas_wait_done:
   DetailPrint "OAS: 环境已清空，开始安装。"
 !macroend
+
+; ---------------------------------------------------------------------------
+; 覆盖更新/卸载的文件删除策略（替换默认实现）
+;
+; 背景（1.1.22 实测踩坑）：
+;   默认实现（electron-builder 26 atomicRMDir）在覆盖更新时把整个安装目录
+;   逐文件 Rename 到 $PLUGINSDIR\old-install，成功后旧文件随安装器退出被
+;   丢弃 —— 两个后果：
+;     1) config 下的用户数据（实例 oas*.json、自定义方案 gui_*.json、
+;        deploy.yaml）被一起搬走清空，更新一次丢一次；
+;     2) 任何一个文件被占用（杀进程后的句柄残留、杀毒/索引服务的瞬时锁，
+;        进程检查根本看不见）→ 整体回滚 Abort → 退出码非 0 → 重试 5 次
+;        → 弹「无法关闭 OAS Studio / 请点重试」——即使用户早就关了程序。
+;
+; 这里的策略：
+;   - 直接 RMDir /r 删除，个别被占用的文件忽略错误留在原地（它们要么是
+;     日志、要么是即将被新文件覆盖的程序文件，不影响安装结果）；
+;   - 覆盖更新时先把 config 用户数据搬到插件临时目录，删完再原位放回；
+;   - 卸载（非更新）不备份，用户数据随目录清理。
+!macro customRemoveFiles
+  ${if} ${isUpdated}
+    DetailPrint "OAS: 备份 config 用户数据（实例 / 自定义方案 / 部署配置）…"
+    CreateDirectory "$PLUGINSDIR\oas-keep"
+    CopyFiles /SILENT "$INSTDIR\resources\engine\config\oas*.json" "$PLUGINSDIR\oas-keep"
+    CopyFiles /SILENT "$INSTDIR\resources\engine\config\gui_*.json" "$PLUGINSDIR\oas-keep"
+    CopyFiles /SILENT "$INSTDIR\resources\engine\config\deploy.yaml" "$PLUGINSDIR\oas-keep"
+  ${endIf}
+
+  SetOutPath $TEMP
+  DetailPrint "OAS: 删除旧版本文件（被占用的文件会跳过，不影响安装）…"
+  RMDir /r $INSTDIR
+
+  ${if} ${isUpdated}
+    DetailPrint "OAS: 还原 config 用户数据…"
+    CreateDirectory "$INSTDIR\resources\engine\config"
+    CopyFiles /SILENT "$PLUGINSDIR\oas-keep\*" "$INSTDIR\resources\engine\config"
+  ${endIf}
+!macroend
