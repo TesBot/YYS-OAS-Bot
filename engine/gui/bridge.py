@@ -331,32 +331,102 @@ def get_catalog():
     }
 
 
+# 一次 shell 往返取齐设备身份：同一台安卓实例可能同时以两个传输名出现在
+# `adb devices` 里（MuMu 12 实测：`emulator-5554` 走模拟器本地控制台端口、
+# `127.0.0.1:16384` 走多开 adb 端口）。只看 serial 会把它们当成两台设备，
+# 于是「只开了一个模拟器，却多出一条未绑定的 emulator-XXXX」。
+# boot_id 是内核每次启动生成的 UUID，与传输方式无关，是判定「同一台」最可靠的依据；
+# 取不到时退到 ro.serialno，再退到 serial 本身（不合并）。
+_PROBE_SHELL = (
+    "echo _OAS_B; cat /proc/sys/kernel/random/boot_id 2>/dev/null; "
+    "echo _OAS_M; getprop ro.product.model; "
+    "echo _OAS_S; getprop ro.serialno; "
+    "echo _OAS_W; wm size; "
+    "echo _OAS_D; wm density"
+)
+
+
+def _probe_device(serial: str) -> dict:
+    """读取单台设备的身份与显示参数；任何异常都退化为空，由调用方兜底。"""
+    try:
+        out = subprocess.run([str(ADB), "-s", serial, "shell", _PROBE_SHELL],
+                             capture_output=True, text=True, timeout=8)
+    except Exception:  # noqa: BLE001 - 设备掉线/ADB 卡住都不该拖垮整次扫描
+        return {}
+    # 不看退出码：复合命令的退出码取自最后一条（wm 在某些镜像上不存在），
+    # 但前面的 boot_id 依然有效，能读到什么就用什么。
+    if not (out.stdout or "").strip():
+        return {}
+    sections: dict[str, list[str]] = {}
+    current = None
+    for raw in (out.stdout or "").splitlines():
+        line = raw.strip()
+        if line.startswith("_OAS_") and len(line) == 6:
+            current = line[5:]
+            sections[current] = []
+            continue
+        if current:
+            sections[current].append(line)
+
+    def pick(key: str) -> str:
+        return next((v for v in sections.get(key, []) if v), "")
+
+    # `wm size` 可能同时给出 Physical/Override 两行，取第一行（物理分辨率）
+    size = pick("W")
+    density = pick("D")
+    return {
+        "boot_id": pick("B"),
+        "model": pick("M"),
+        "serialno": pick("S"),
+        "resolution": size.split(":")[-1].strip() or None,
+        "density": density.split(":")[-1].strip() or None,
+    }
+
+
 def _device_detail(serials: list[str]) -> list[dict]:
-    """把 serial 列表补全为带型号/分辨率、且标注已绑定实例的设备详情。"""
-    detail = []
-    for serial in serials:
-        item = {"serial": serial, "model": None, "resolution": None, "density": None}
-        try:
-            out = subprocess.run([str(ADB), "-s", serial, "shell", "wm", "size"],
-                                 capture_output=True, text=True, timeout=6)
-            item["resolution"] = out.stdout.strip().split(":")[-1].strip() or None
-            out = subprocess.run([str(ADB), "-s", serial, "shell", "wm", "density"],
-                                 capture_output=True, text=True, timeout=6)
-            item["density"] = out.stdout.strip().split(":")[-1].strip() or None
-            out = subprocess.run([str(ADB), "-s", serial, "shell", "getprop", "ro.product.model"],
-                                 capture_output=True, text=True, timeout=6)
-            item["model"] = out.stdout.strip() or None
-        except Exception:  # noqa: BLE001
-            pass
-        detail.append(item)
-    bound = {}
+    """把 serial 列表补全为带型号/分辨率、且标注已绑定实例的设备详情。
+
+    adb 会把同一台实例以多个传输名重复列出，这里按 boot_id 合并成一行：
+    保留已绑定的那一个 serial（否则实例卡片的设备信息会对不上），其次保留
+    多开用的 TCP 地址，最后才是 `emulator-*`；被合并掉的写入 ``aliases``。
+    """
+    bound: dict[str, str] = {}
     for path in _instance_files():
         cfg = _load(path)
         serial = ((cfg.get("script") or {}).get("device") or {}).get("serial")
         if serial:
             bound[serial] = path.stem
-    for item in detail:
-        item["bound_to"] = bound.get(item["serial"])
+
+    groups: dict[str, list[dict]] = {}
+    for serial in serials:
+        info = _probe_device(serial)
+        identity = info.get("boot_id") or info.get("serialno") or serial
+        groups.setdefault(identity, []).append({
+            "serial": serial,
+            "model": info.get("model") or None,
+            "resolution": info.get("resolution"),
+            "density": info.get("density"),
+        })
+
+    def rank(item: dict) -> tuple[int, int]:
+        serial = item["serial"]
+        # 已绑定优先（卡片按 inst.serial 找设备）；其次 TCP 地址，最后 emulator-*
+        transport = 0 if serial.startswith("127.0.0.1:") else (
+            2 if serial.startswith("emulator-") else 1)
+        return (0 if serial in bound else 1, transport)
+
+    detail = []
+    for items in groups.values():
+        items.sort(key=rank)
+        primary = items[0]
+        aliases = [item["serial"] for item in items[1:]]
+        primary["bound_to"] = next(
+            (bound[s] for s in [primary["serial"], *aliases] if s in bound), None)
+        if aliases:
+            primary["aliases"] = aliases
+        detail.append(primary)
+    # 已绑定的排前面，其余按 serial 稳定排序
+    detail.sort(key=lambda d: (d["bound_to"] is None, d["serial"]))
     return detail
 
 
@@ -586,7 +656,8 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 @app.get("/api/version")
 def version():
     """安装包版本。升级后用来确认用户实际跑的是哪一份 bridge，而不是旧包。"""
-    return {"version": "1.1.22", "build": "battle-idle"}
+    # 与控制台版本对齐：这个端点就是用来确认用户实际跑的是哪一份 bridge 的
+    return {"version": "1.1.25", "build": "battle-idle"}
 
 
 @app.get("/api/health")
