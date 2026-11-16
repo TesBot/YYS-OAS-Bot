@@ -222,8 +222,8 @@
     }
   }
 
-  function btn(label, ico, onClick, kind) {
-    const b = el('button', { class: 'btn' + (kind ? ' btn-' + kind : ''), html: icon(ico) + `<span>${esc(label)}</span>` });
+  function btn(label, ico, onClick, kind, size) {
+    const b = el('button', { class: 'btn' + (kind ? ' btn-' + kind : '') + (size ? ' btn-' + size : ''), html: icon(ico) + `<span>${esc(label)}</span>` });
     b.addEventListener('click', onClick);
     return b;
   }
@@ -361,76 +361,51 @@
   }
 
   function accountCard(inst) {
+    // 紧凑两行：第一行是谁（昵称/区服）+ 两个动作，第二行在哪（模拟器 ID/分辨率/在跑什么）。
+    // 「编排表」归编排页管，卡片上不再重复；「测试连接」由刷新设备覆盖，也不再占位。
     const device = state.devices.find((d) => d.serial === inst.serial) || null;
+    const act = instActivity(inst);
+    const serial = inst.serial || '未绑定模拟器';
     const card = el('div', { class: 'acct' });
     const initial = (inst.nickname || inst.name).slice(0, 1).toUpperCase();
-    card.appendChild(el('div', { class: 'acct-top' },
+
+    card.appendChild(el('div', { class: 'acct-row' },
       el('div', { class: 'avatar' + (inst.primary ? '' : ' sub'), text: initial }),
-      el('div', { class: 'acct-id' },
-        el('strong', { text: inst.nickname || inst.name }),
-        el('span', { text: inst.server ? `${inst.server} · ${inst.role_id || '未填ID'}` : '未填写区服' }),
-      ),
+      el('strong', { class: 'acct-name', title: inst.nickname || inst.name, text: inst.nickname || inst.name }),
+      el('span', { class: 'acct-server', text: inst.server ? `${inst.server} · ${inst.role_id || '未填ID'}` : '未填区服' }),
       el('div', { class: 'grow' }),
-      el('span', { class: 'step-status' },
-        el('span', { class: 'dot ' + (inst.online ? 'dot-ok' : 'dot-err') }),
-        el('span', { class: 'small muted', text: inst.online ? '在线' : '离线' }),
+      el('div', { class: 'acct-actions' },
+        btn('编辑资料', 'sliders', () => openProfileDrawer(inst), 'ghost', 'sm'),
+        btn('解绑', 'trash', () => removeInstance(inst.name), 'danger', 'sm'),
       ),
     ));
 
-    // 正在做啥：运行中的单任务 run 是最直接的信号，能找到所属编排表就带上名字。
-    const act = instActivity(inst);
-    card.appendChild(el('div', { class: 'acct-act acct-act-' + act.tone },
-      el('span', { class: 'badge ' + act.badge, text: act.label }),
-      el('span', { class: 'small muted', text: act.detail }),
-    ));
-
-    card.appendChild(el('div', { class: 'acct-meta' },
-      metaItem('模拟器', device
-        ? `${inst.serial} · ${device.resolution || ''}`
-        : `${inst.serial || '—'} · 未扫描到`),
-      metaItem('编排表', (inst.flows && inst.flows.length) ? inst.flows.join('、') : '未加入'),
-    ));
-    card.appendChild(el('div', { class: 'acct-actions' },
-      btn('测试连接', 'bolt', () => testInstance(inst.name), ''),
-      btn('编辑资料', 'sliders', () => openProfileDrawer(inst), 'ghost'),
-      btn('解绑', 'trash', () => removeInstance(inst.name), 'danger'),
+    card.appendChild(el('div', { class: 'acct-row acct-row-meta' },
+      el('span', { class: 'dot ' + (inst.online ? 'dot-ok' : 'dot-err') }),
+      el('span', { class: 'acct-serial', title: serial, text: serial }),
+      device && device.resolution ? el('span', { class: 'muted', text: '· ' + device.resolution }) : null,
+      !device ? el('span', { class: 'muted', text: '· 未扫描到' }) : null,
+      !inst.online ? el('span', { class: 'muted', text: '· 离线' }) : null,
+      act.tone === 'run' ? el('span', { class: 'badge badge-accent', text: '执行中' }) : null,
+      act.tone === 'run' && act.detail
+        ? el('span', { class: 'acct-act-text muted', title: act.detail, text: act.detail }) : null,
     ));
     return card;
   }
 
   function instActivity(inst) {
-    if (!inst.online) {
-      return { tone: 'off', badge: 'badge-err', label: '离线', detail: '模拟器不在线' };
-    }
+    // 只保留「是否在跑、跑什么」：在线状态由第二行的圆点表示，不再重复一行徽章
+    if (!inst.online) return { tone: 'off', detail: '' };
     const run = state.runs.find((r) => r.instance === inst.name && r.status === 'running');
-    if (!run) {
-      return { tone: 'idle', badge: 'badge-dim', label: '暂无任务', detail: '' };
-    }
+    if (!run) return { tone: 'idle', detail: '' };
     const flow = state.jobs.find((j) => j.id === run.batch);
     return {
       tone: 'run',
-      badge: 'badge-accent',
-      label: '正在执行',
       detail: taskMeta(run.task).name + (flow ? ` · ${flow.flow_name}` : ''),
     };
   }
 
-  function metaItem(k, v) {
-    return el('div', {}, el('span', { class: 'k', text: k }), el('span', { class: 'v', title: String(v), text: String(v) }));
-  }
-
   /* ---------------- 账号绑定操作 ---------------- */
-
-  async function testInstance(name) {
-    toast('正在测试连接…');
-    try {
-      const r = await api(`/api/instances/${name}/test`, { method: 'POST' });
-      if (r.online) toast(`连接正常 ${r.serial} · ${r.resolution || '分辨率未知'}`, 'ok');
-      else toast('设备不在线，请检查模拟器与 adb 端口', 'err');
-      await loadInstances();
-      render();
-    } catch (e) { toast('测试失败：' + e.message, 'err'); }
-  }
 
   async function removeInstance(name) {
     const last = state.instances.length <= 1;
@@ -2552,25 +2527,6 @@
 
   /* ---------------- 高级 ---------------- */
   function renderAdvanced(root) {
-    root.appendChild(el('div', { class: 'section-title' }, el('h2', { text: '干净会话' }),
-      el('span', { class: 'sub', text: '每次启动 / 退出都会清空账号绑定与旧 adb 端口。' })));
-    const sessionPanel = el('div', { class: 'panel', style: 'margin-bottom:18px' });
-    const sessionBody = el('div', { class: 'panel-body' },
-      el('p', { class: 'small muted', text: '启动时会删除全部实例配置（含 .bak / .tmp）和旧的模拟器端口，'
-        + '所以每次打开控制台都是重新绑定账号的状态。任务编排、自定义方案库、账号资料（含组队游戏昵称）会长期保留：'
-        + '任务是通用模板，不跟某个号走。' }),
-      btn('立即清空账号绑定', 'trash', async () => {
-        if (!confirm('清空全部账号绑定与运行状态？\n\n任务编排 / 自定义方案 / 账号资料会保留。')) return;
-        try {
-          const r = await api('/api/instances/unbind-all', { method: 'POST' });
-          await refreshAll();
-          toast(`已清空 ${r.removed.length} 个实例绑定，任务模板已保留`, 'ok');
-        } catch (e) { toast('清空失败：' + e.message, 'err'); }
-      }, 'danger'),
-    );
-    sessionPanel.appendChild(sessionBody);
-    root.appendChild(sessionPanel);
-
     root.appendChild(el('div', { class: 'section-title' }, el('h2', { text: '协助悬赏封印邀请' }),
       el('span', { class: 'sub', text: '好友发起协助邀请时的处理策略，按模拟器账号设置。' })));
     const popupPanel = el('div', { class: 'panel' });
