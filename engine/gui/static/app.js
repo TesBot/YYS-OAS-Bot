@@ -1011,12 +1011,26 @@
   // 滚动寻找并点击的参数；缺省值与执行器 engine/gui/custom_click_runner.py 的 as_scroll 保持一致
   function ccScroll(raw) {
     const r = (raw && typeof raw === 'object') ? raw : {};
-    const a = Array.isArray(r.anchor) && r.anchor.length === 2 ? r.anchor : [640, 400];
     const cl = (v, lo, hi, d) => Math.max(lo, Math.min(ccNum(v, d), hi));
+    const a = Array.isArray(r.anchor) && r.anchor.length === 2 ? r.anchor : [640, 400];
+    const anchor = [Math.round(cl(a[0], 0, 1279, 640)), Math.round(cl(a[1], 0, 719, 400))];
     const rr = Array.isArray(r.template_rect) && r.template_rect.length === 4
       ? r.template_rect.map((n) => Math.round(ccNum(n, 0))) : [];
+    // 鼠标停留区域：只有点没有框时，展开成 24x24 的小方块，保证每次落点仍有随机性
+    const box = (p) => [Math.max(0, p[0] - 12), Math.max(0, p[1] - 12),
+      Math.min(1279, p[0] + 12), Math.min(719, p[1] + 12)];
+    let rect = box(anchor);
+    if (Array.isArray(r.anchor_rect) && r.anchor_rect.length === 4) {
+      const v = r.anchor_rect.map((n) => Math.round(ccNum(n, 0)));
+      const x1 = Math.max(0, Math.min(Math.min(v[0], v[2]), 1279));
+      const x2 = Math.max(0, Math.min(Math.max(v[0], v[2]), 1279));
+      const y1 = Math.max(0, Math.min(Math.min(v[1], v[3]), 719));
+      const y2 = Math.max(0, Math.min(Math.max(v[1], v[3]), 719));
+      if (x2 - x1 >= 8 && y2 - y1 >= 8) rect = [x1, y1, x2, y2];
+    }
     return {
-      anchor: [Math.round(cl(a[0], 0, 1279, 640)), Math.round(cl(a[1], 0, 719, 400))],
+      anchor: [Math.round((rect[0] + rect[2]) / 2), Math.round((rect[1] + rect[3]) / 2)],
+      anchor_rect: rect,
       direction: r.direction === 'up' ? 'up' : 'down',
       wheel: Math.round(cl(r.wheel, 1, 30, 5)),
       interval: Math.round(cl(r.interval, 0.2, 5, 0.8) * 100) / 100,
@@ -1058,10 +1072,9 @@
         texts: s.texts || [], repeat: ccRepeat(s.repeat),
         jump: Math.max(0, parseInt(s.jump, 10) || 0),
       });
-      delete step.__image;  // 截图与目标图片缓存只属于编辑期
+      delete step.__image;  // 截图缓存只属于编辑期；preview 是存进方案的参考画面，要留着
       delete step.__inst;
-      delete step.__anchorImg;
-      delete step.__tplImg;
+      delete step.__shot;
       return step;
     });
     if (!p.steps.length) p.steps = [newCCStep(0)];
@@ -1084,8 +1097,7 @@
         });
         delete step.__image;
         delete step.__inst;
-        delete step.__anchorImg;
-        delete step.__tplImg;
+        delete step.__shot;
         delete step.delay;
         return step;
       }),
@@ -1201,19 +1213,20 @@
       el('h2', { text: '层级' }),
       el('span', { class: 'sub', text: '按顺序执行' })), stepsBox);
 
-    // 每层的大图就是选区画布：抓图后直接在图上拖框，框即点击区域
+    // 每层的大图就是选区画布：抓图后直接在图上拖框，框即点击区域（参考画面随方案保存）
     function captureBlock(step) {
       const instSel = el('select', { class: 'select' });
       insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
       if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
+      const shot = ccShot(step);
       const capNote = el('span', { class: 'small muted',
-        text: step.__image ? '在图上拖框选出点击区域（可重拖）' : '抓取画面后，在图上拖框选出点击区域' });
+        text: shot ? '在图上拖框选出点击区域（可重拖）' : '抓取画面后，在图上拖框选出点击区域' });
 
-      const stage = el('div', { class: 'cc-stage' + (step.__image ? '' : ' empty') });
-      const img = el('img', { class: 'cc-stage-img', src: step.__image || '', alt: '本层画面' });
+      const stage = el('div', { class: 'cc-stage' + (shot ? '' : ' empty') });
+      const img = el('img', { class: 'cc-stage-img', src: shot, alt: '本层画面' });
       const sel = el('div', { class: 'cc-sel' });
       const empty = el('div', { class: 'cc-stage-empty', text: '抓取本层画面后，在图上拖框选出点击区域' });
-      img.hidden = !step.__image; empty.hidden = !!step.__image; sel.hidden = !step.__image;
+      img.hidden = !shot; empty.hidden = !!shot; sel.hidden = !shot;
       stage.append(img, sel, empty);
 
       const put = (r) => {
@@ -1231,7 +1244,7 @@
         Math.max(a[0], b[0]), Math.max(a[1], b[1])];
       let origin = null, dragging = false;
       stage.addEventListener('pointerdown', (e) => {
-        if (!step.__image) return;
+        if (!ccShot(step)) return;
         dragging = true; origin = coord(e);
         put([origin[0], origin[1], origin[0], origin[1]]);
         try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
@@ -1253,9 +1266,8 @@
         if (!instSel.value) return toast('请先绑定模拟器', 'err');
         capBtn.disabled = true; capNote.textContent = '抓取中…';
         try {
-          const r = await api(`/api/instances/${encodeURIComponent(instSel.value)}/screenshot`, { method: 'POST' });
-          step.__image = r.image; step.__inst = instSel.value; lastCapInst = instSel.value;
-          img.src = r.image; img.hidden = false; empty.hidden = true; sel.hidden = false;
+          const src = await ccTakeShot(step, instSel.value);
+          img.src = src; img.hidden = false; empty.hidden = true; sel.hidden = false;
           stage.classList.remove('empty');
           put(step.rect);
           capNote.textContent = '在图上拖框选出点击区域（可重拖）';
@@ -1290,44 +1302,92 @@
       c.getContext('2d').drawImage(im, rect[0], rect[1], w, h, 0, 0, w, h);
       return c.toDataURL('image/png').split(',')[1];
     }
+    // 参考画面：截图压成 1280x720 JPEG 存进方案，重新打开方案时才能接着改框选
+    async function ccPreview(dataUrl) {
+      const im = await ccLoadImage(dataUrl);
+      const c = document.createElement('canvas');
+      c.width = 1280; c.height = 720;
+      c.getContext('2d').drawImage(im, 0, 0, 1280, 720);
+      return c.toDataURL('image/jpeg', 0.6);
+    }
+    // 当前层可用的画面：本次编辑刚抓的优先，否则用上次保存的参考画面
+    function ccShot(step) {
+      return step.__shot || step.preview || '';
+    }
+    async function ccTakeShot(step, instName) {
+      const src = await ccGrab(instName);
+      step.__shot = src;
+      step.__inst = instName;
+      lastCapInst = instName;
+      try { step.preview = await ccPreview(src); } catch (e) { /* 压缩失败就不存参考画面 */ }
+      return src;
+    }
 
-    // 滚动层 ①：抓图后单击图上任意一点，作为鼠标停留位置（滚轮就在这里滚）
+    // 滚动层 ①：框出鼠标停留区域，滚动时在这个区域里随机取落点（像人手一样）
     function anchorBlock(step) {
       const instSel = el('select', { class: 'select' });
       insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
       if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
+      const shot = ccShot(step);
+      const tip = (r) => `鼠标会在 (${r[0]}, ${r[1]}) - (${r[2]}, ${r[3]}) 内随机停留`;
       const note = el('span', { class: 'small muted',
-        text: step.__anchorImg ? '在图上单击，设定鼠标停留点' : '抓取画面后，在图上单击设定鼠标停留点' });
-      const stage = el('div', { class: 'cc-stage' + (step.__anchorImg ? '' : ' empty') });
-      const img = el('img', { class: 'cc-stage-img', src: step.__anchorImg || '', alt: '鼠标位置参考画面' });
-      const dot = el('div', { class: 'cc-anchor' });
-      const empty = el('div', { class: 'cc-stage-empty', text: '抓取画面后，在图上单击设定鼠标停留点' });
-      img.hidden = !step.__anchorImg; empty.hidden = !!step.__anchorImg; dot.hidden = !step.__anchorImg;
-      stage.append(img, dot, empty);
-      const put = (p) => { dot.style.left = (p[0] / 1280 * 100) + '%'; dot.style.top = (p[1] / 720 * 100) + '%'; };
+        text: shot ? tip(step.scroll.anchor_rect) : '先抓取画面，再拖一个框' });
+      const stage = el('div', { class: 'cc-stage' + (shot ? '' : ' empty') });
+      const img = el('img', { class: 'cc-stage-img', src: shot, alt: '鼠标停留区域参考画面' });
+      const sel = el('div', { class: 'cc-sel' });
+      const empty = el('div', { class: 'cc-stage-empty', text: '抓取画面后，在图上拖一个框，选出鼠标停留区域' });
+      img.hidden = !shot; empty.hidden = !!shot; sel.hidden = !shot;
+      stage.append(img, sel, empty);
+      const put = (r) => {
+        sel.style.left = (r[0] / 1280 * 100) + '%';
+        sel.style.top = (r[1] / 720 * 100) + '%';
+        sel.style.width = ((r[2] - r[0]) / 1280 * 100) + '%';
+        sel.style.height = ((r[3] - r[1]) / 720 * 100) + '%';
+      };
       const coord = (e) => {
         const b = img.getBoundingClientRect();
         return [Math.max(0, Math.min(1280, Math.round((e.clientX - b.left) * 1280 / b.width))),
           Math.max(0, Math.min(720, Math.round((e.clientY - b.top) * 720 / b.height)))];
       };
+      const between = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]),
+        Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+      let origin = null, dragging = false;
+      const commit = (r) => {  // 交给 ccScroll 统一 clamp，顺便同步停留中心点
+        const s = ccScroll(Object.assign({}, step.scroll, { anchor_rect: r }));
+        step.scroll.anchor_rect = s.anchor_rect;
+        step.scroll.anchor = s.anchor;
+        put(s.anchor_rect);
+        note.textContent = tip(s.anchor_rect);
+      };
       stage.addEventListener('pointerdown', (e) => {
-        if (!step.__anchorImg) return;
-        const p = coord(e);
-        step.scroll.anchor = p; put(p); dot.hidden = false;
-        note.textContent = `鼠标停留点 (${p[0]}, ${p[1]})`;
+        if (!ccShot(step)) return;
+        dragging = true; origin = coord(e);
+        try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
         e.preventDefault();
       });
-      put(step.scroll.anchor);
+      stage.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const r = between(origin, coord(e));
+        if (r[2] - r[0] >= 4 || r[3] - r[1] >= 4) put(r);
+      });
+      stage.addEventListener('pointerup', (e) => {
+        if (!dragging) return;
+        dragging = false;
+        const p = coord(e);
+        let r = between(origin, p);
+        if (r[2] - r[0] < 8 || r[3] - r[1] < 8) r = [p[0] - 12, p[1] - 12, p[0] + 12, p[1] + 12];
+        commit(r);
+      });
+      put(step.scroll.anchor_rect);
       const capBtn = smallBtn('抓取画面', 'refresh', async () => {
         if (!instSel.value) return toast('请先绑定模拟器', 'err');
         capBtn.disabled = true; note.textContent = '抓取中…';
         try {
-          const src = await ccGrab(instSel.value);
-          step.__anchorImg = src; step.__inst = instSel.value; lastCapInst = instSel.value;
-          img.src = src; img.hidden = false; empty.hidden = true; dot.hidden = false;
+          const src = await ccTakeShot(step, instSel.value);
+          img.src = src; img.hidden = false; empty.hidden = true; sel.hidden = false;
           stage.classList.remove('empty');
-          put(step.scroll.anchor);
-          note.textContent = '在图上单击，设定鼠标停留点';
+          put(step.scroll.anchor_rect);
+          note.textContent = tip(step.scroll.anchor_rect);
         } catch (e) { note.textContent = '抓取失败：' + e.message; toast('抓取失败：' + e.message, 'err'); }
         capBtn.disabled = false;
       }, 'ghost');
@@ -1335,15 +1395,16 @@
         el('div', { class: 'row cc-cap-tools' }, instSel, capBtn, note), stage);
     }
 
-    // 滚动层 ②：再抓一张画面，框选出要找的目标图案（裁剪后作为匹配模板）
+    // 滚动层 ②：框出要找的目标图案（裁剪后作为匹配模板）
     function targetBlock(step) {
       const instSel = el('select', { class: 'select' });
       insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
       if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
+      const shot = ccShot(step);
       const note = el('span', { class: 'small muted',
-        text: step.__tplImg ? '在图上拖框，框出要找的目标图案（可重拖）' : '抓取画面后，在图上拖框框出目标图案' });
-      const stage = el('div', { class: 'cc-stage' + (step.__tplImg ? '' : ' empty') });
-      const img = el('img', { class: 'cc-stage-img', src: step.__tplImg || '', alt: '目标图案参考画面' });
+        text: shot ? '拖一个框，框出要找的图案（可重拖）' : '先抓取画面，再框出要找的图案' });
+      const stage = el('div', { class: 'cc-stage' + (shot ? '' : ' empty') });
+      const img = el('img', { class: 'cc-stage-img', src: shot, alt: '目标图案参考画面' });
       const sel = el('div', { class: 'cc-sel' });
       const empty = el('div', { class: 'cc-stage-empty', text: '抓取画面后，在图上拖框框出目标图案' });
       const preview = el('div', { class: 'cc-tpl' });
@@ -1357,7 +1418,7 @@
           el('img', { class: 'cc-tpl-img', src: 'data:image/png;base64,' + step.scroll.template, alt: '目标图片' }),
           el('span', { class: 'small muted', text: '目标图片已设置，执行时按它匹配' }));
       }
-      img.hidden = !step.__tplImg; empty.hidden = !!step.__tplImg; sel.hidden = !step.__tplImg;
+      img.hidden = !shot; empty.hidden = !!shot; sel.hidden = !shot;
       stage.append(img, sel, empty);
       const put = (r) => {
         sel.style.left = (r[0] / 1280 * 100) + '%';
@@ -1374,7 +1435,7 @@
         Math.max(a[0], b[0]), Math.max(a[1], b[1])];
       let origin = null, dragging = false;
       stage.addEventListener('pointerdown', (e) => {
-        if (!step.__tplImg) return;
+        if (!ccShot(step)) return;
         dragging = true; origin = coord(e);
         put([origin[0], origin[1], origin[0], origin[1]]);
         try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
@@ -1389,7 +1450,7 @@
         step.scroll.template_rect = r; put(r);
         note.textContent = '裁剪中…';
         try {
-          step.scroll.template = await ccCrop(step.__tplImg, r);
+          step.scroll.template = await ccCrop(ccShot(step), r);
           paintPreview();
           note.textContent = `目标图案已截取 ${r[2] - r[0]}×${r[3] - r[1]}（可重拖）`;
         } catch (err) { note.textContent = '裁剪失败：' + err.message; }
@@ -1400,12 +1461,11 @@
         if (!instSel.value) return toast('请先绑定模拟器', 'err');
         capBtn.disabled = true; note.textContent = '抓取中…';
         try {
-          const src = await ccGrab(instSel.value);
-          step.__tplImg = src; step.__inst = instSel.value; lastCapInst = instSel.value;
+          const src = await ccTakeShot(step, instSel.value);
           img.src = src; img.hidden = false; empty.hidden = true; sel.hidden = false;
           stage.classList.remove('empty');
           if (step.scroll.template_rect && step.scroll.template_rect.length === 4) put(step.scroll.template_rect);
-          note.textContent = '在图上拖框，框出要找的目标图案（可重拖）';
+          note.textContent = '拖一个框，框出要找的图案（可重拖）';
         } catch (e) { note.textContent = '抓取失败：' + e.message; toast('抓取失败：' + e.message, 'err'); }
         capBtn.disabled = false;
       }, 'ghost');
@@ -1470,10 +1530,10 @@
       modeSel.value = step.mode === 'scroll' ? 'scroll' : 'direct';
       modeSel.addEventListener('change', () => { step.mode = modeSel.value; paintSteps(); });
 
-      // 滚动层参数：鼠标停留点由 ① 点击确定，目标图片由 ② 框选确定
+      // 滚动层参数：鼠标停留区域由 ① 框选，目标图片由 ② 框选
       const sc = step.scroll;
       const scMethodSel = el('select', { class: 'select' },
-        el('option', { value: 'auto', text: '自动（优先滚轮）' }),
+        el('option', { value: 'auto', text: '自动（推荐）' }),
         el('option', { value: 'wheel', text: '鼠标滚轮' }),
         el('option', { value: 'drag', text: '手指拖动' }));
       scMethodSel.value = sc.method;
@@ -1495,7 +1555,7 @@
       const body = el('div', { class: 'panel-body' }, field('动作类型', modeSel));
       if (step.mode === 'scroll') {
         body.append(
-          el('div', { class: 'cc-hint', text: '① 抓图后单击图上任意位置 = 鼠标停留点；② 再抓一张画面，框选要点击的目标图案。执行时一边滚动一边找，找到就点它。滚动方式选「自动」时，能把滚轮发进模拟器就用滚轮，否则自动改成手指拖动（adb/minitouch 控制方式一般走拖动）。' }),
+          el('div', { class: 'cc-hint', text: '① 抓图后拖一个框，鼠标在框内随机停留；② 再拖一个框，框出要找的图案。执行时一边滚动一边找，找到就点它。' }),
           anchorBlock(step),
           targetBlock(step),
           el('div', { class: 'cc-grid cc-grid-3' },

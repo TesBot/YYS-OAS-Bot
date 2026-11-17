@@ -657,7 +657,7 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 def version():
     """安装包版本。升级后用来确认用户实际跑的是哪一份 bridge，而不是旧包。"""
     # 与控制台版本对齐：这个端点就是用来确认用户实际跑的是哪一份 bridge 的
-    return {"version": "1.1.27", "build": "scroll-find"}
+    return {"version": "1.1.28", "build": "scroll-find"}
 
 
 @app.get("/api/health")
@@ -1278,6 +1278,25 @@ def _cc_point(value, default: tuple[int, int] = (640, 400)) -> list[int]:
 
 
 _CC_TEMPLATE_LIMIT = 4_000_000  # base64 字符上限，约 3MB PNG，够放大半个屏幕
+_CC_PREVIEW_LIMIT = 2_000_000  # 编辑期参考画面（1280x720 JPEG）字符上限
+
+
+def _cc_anchor_rect(value, point: list[int]) -> list[int]:
+    """鼠标停留区域：用户框出来的矩形；没框过就按停留点展开成小方块。"""
+    try:
+        x1, y1, x2, y2 = (int(round(float(v))) for v in list(value)[:4])
+    except (TypeError, ValueError):
+        return _cc_box_around(point)
+    x1, x2 = sorted((max(0, min(x1, 1279)), max(0, min(x2, 1279))))
+    y1, y2 = sorted((max(0, min(y1, 719)), max(0, min(y2, 719))))
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return _cc_box_around(point)
+    return [x1, y1, x2, y2]
+
+
+def _cc_box_around(point: list[int], half: int = 12) -> list[int]:
+    x, y = point
+    return [max(0, x - half), max(0, y - half), min(1279, x + half), min(719, y + half)]
 
 
 def _normalize_cc_scroll(raw) -> dict:
@@ -1294,8 +1313,11 @@ def _normalize_cc_scroll(raw) -> dict:
     template = raw.get("template")
     template = template if isinstance(template, str) and len(template) <= _CC_TEMPLATE_LIMIT else ""
     rect = raw.get("template_rect")
+    anchor = _cc_point(raw.get("anchor"))
+    area = _cc_anchor_rect(raw.get("anchor_rect"), anchor)
     return {
-        "anchor": _cc_point(raw.get("anchor")),
+        "anchor": [(area[0] + area[2]) // 2, (area[1] + area[3]) // 2],
+        "anchor_rect": area,
         "direction": "up" if raw.get("direction") == "up" else "down",
         "wheel": int(num("wheel", 5, 1, 30)),
         "interval": num("interval", 0.8, 0.2, 5.0),
@@ -1309,11 +1331,14 @@ def _normalize_cc_scroll(raw) -> dict:
 
 def _normalize_cc_step(raw, index: int) -> dict:
     raw = raw if isinstance(raw, dict) else {}
+    preview = raw.get("preview")  # 编辑期参考画面：留着才能重新打开方案改框选
+    preview = preview if isinstance(preview, str) and len(preview) <= _CC_PREVIEW_LIMIT else ""
     return {
         "id": raw.get("id") or f"cs{uuid.uuid4().hex[:6]}",
         "name": (raw.get("name") or f"第 {index + 1} 层").strip(),
         "mode": "scroll" if raw.get("mode") == "scroll" else "direct",
         "scroll": _normalize_cc_scroll(raw.get("scroll")),
+        "preview": preview,
         "texts": _cc_lines(raw.get("texts")),
         "forbid": _cc_lines(raw.get("forbid")),
         "match": "any" if raw.get("match") == "any" else "all",

@@ -33,7 +33,11 @@ FULL_ROI = (0, 0, 1280, 720)  # 引擎强制 1280x720，见 screenshot.py:206
 
 
 def log(msg: str) -> None:
-    print(f"[自定义点击] {msg}", flush=True)
+    text = f"[自定义点击] {msg}"
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:  # 控制台不是 UTF-8 时（GBK 终端）退回可编码字符，别让日志打断任务
+        print(text.encode("utf-8", "replace").decode("gbk", "replace"), flush=True)
 
 
 def build_device(config_name: str):
@@ -326,6 +330,7 @@ WM_MOUSEMOVE = 0x0200
 WM_MOUSEWHEEL = 0x020A
 WHEEL_DELTA = 120            # Win32 单格滚轮增量
 SCROLL_DEFAULT_ANCHOR = (640, 400)
+SCROLL_ANCHOR_MIN = 24      # 鼠标停留区域最小边长（点选时自动展开成小方块）
 SCROLL_DRAG_SPAN = 260       # 拖动兜底时的滑动距离（像素）
 SCROLL_METHOD_LABEL = {"auto": "自动", "wheel": "滚轮", "drag": "拖动"}
 
@@ -339,6 +344,32 @@ def as_point(value, default=SCROLL_DEFAULT_ANCHOR) -> tuple[int, int]:
     return max(0, min(x, 1279)), max(0, min(y, 719))
 
 
+def _box_around(point) -> tuple[int, int, int, int]:
+    """停留点 → 停留区域：没框选时退化成点附近的小方块，保证仍有随机抖动。"""
+    x, y = point
+    half = SCROLL_ANCHOR_MIN // 2
+    return (max(0, x - half), max(0, y - half), min(1279, x + half), min(719, y + half))
+
+
+def as_anchor_rect(value, point) -> tuple[int, int, int, int]:
+    """鼠标停留区域（x1, y1, x2, y2）：模拟人手落点，每次滚动都在框内随机取点。"""
+    try:
+        x1, y1, x2, y2 = (int(round(float(v))) for v in list(value)[:4])
+    except (TypeError, ValueError):
+        return _box_around(point)
+    x1, x2 = sorted((max(0, min(x1, 1279)), max(0, min(x2, 1279))))
+    y1, y2 = sorted((max(0, min(y1, 719)), max(0, min(y2, 719))))
+    if x2 - x1 < 8 or y2 - y1 < 8:  # 只点了一下 / 框太小，按点附近随机
+        return _box_around(point)
+    return x1, y1, x2, y2
+
+
+def random_point_in(rect) -> tuple[int, int]:
+    """在停留区域内随机取一点（每次滚动换一个落点，避免死板）。"""
+    x1, y1, x2, y2 = rect
+    return random.randint(x1, max(x1, x2)), random.randint(y1, max(y1, y2))
+
+
 def as_scroll(value) -> dict:
     """滚动参数规范化；缺省值就是 UI 上的默认值。"""
     raw = value if isinstance(value, dict) else {}
@@ -350,8 +381,11 @@ def as_scroll(value) -> dict:
             n = float(default)
         return max(low, min(n, high))
 
+    anchor = as_point(raw.get("anchor"))
+    area = as_anchor_rect(raw.get("anchor_rect"), anchor)
     return {
-        "anchor": as_point(raw.get("anchor")),
+        "anchor": ((area[0] + area[2]) // 2, (area[1] + area[3]) // 2),
+        "anchor_rect": area,
         "direction": "up" if raw.get("direction") == "up" else "down",
         "wheel": int(round(num("wheel", 5, 1, 30))),
         "interval": num("interval", 0.8, 0.2, 5.0),
@@ -443,8 +477,8 @@ def _client_to_screen(hwnd, x, y):
     return int(point.x), int(point.y)
 
 
-def wheel_scroll(device, anchor, direction, notches) -> bool:
-    """把鼠标停在 anchor 上逐格滚动；只投递移动 + 滚轮消息，不产生点击。"""
+def wheel_scroll(device, rect, direction, notches) -> bool:
+    """在停留区域内逐格滚动（每格换一个随机落点）；只投递移动 + 滚轮消息，不产生点击。"""
     import ctypes
     from ctypes import wintypes
 
@@ -454,19 +488,19 @@ def wheel_scroll(device, anchor, direction, notches) -> bool:
     hwnd = window_handle(device)
     if not hwnd:
         return False
-    rect = wintypes.RECT()
-    user32.GetClientRect(hwnd, ctypes.byref(rect))
-    cw, ch = max(1, rect.right), max(1, rect.bottom)  # 客户区可能被缩放，不是 1280x720
-    x, y = anchor
-    client_x = int(round(x * cw / 1280.0))
-    client_y = int(round(y * ch / 720.0))
-    screen_x, screen_y = _client_to_screen(hwnd, client_x, client_y)
-    move_lparam = ((client_y & 0xFFFF) << 16) | (client_x & 0xFFFF)
-    wheel_lparam = ((screen_y & 0xFFFF) << 16) | (screen_x & 0xFFFF)
+    rect_client = wintypes.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect_client))
+    cw, ch = max(1, rect_client.right), max(1, rect_client.bottom)  # 客户区可能被缩放，不是 1280x720
     delta = -WHEEL_DELTA if direction == "down" else WHEEL_DELTA
     wparam = (delta & 0xFFFF) << 16
     ok = True
     for _ in range(max(1, int(notches))):
+        x, y = random_point_in(rect)
+        client_x = int(round(x * cw / 1280.0))
+        client_y = int(round(y * ch / 720.0))
+        screen_x, screen_y = _client_to_screen(hwnd, client_x, client_y)
+        move_lparam = ((client_y & 0xFFFF) << 16) | (client_x & 0xFFFF)
+        wheel_lparam = ((screen_y & 0xFFFF) << 16) | (screen_x & 0xFFFF)
         user32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, move_lparam)   # 先让光标落在该点
         if not user32.PostMessageW(hwnd, WM_MOUSEWHEEL, wparam, wheel_lparam):
             ok = False
@@ -475,16 +509,18 @@ def wheel_scroll(device, anchor, direction, notches) -> bool:
     return ok
 
 
-def drag_scroll(device, anchor, direction, span=SCROLL_DRAG_SPAN) -> bool:
+def drag_scroll(device, rect, direction, span=SCROLL_DRAG_SPAN) -> bool:
     """拖动模拟滚动（滚动向下 = 手指上滑）；按当前 control_method 直接调引擎 swipe。"""
-    x, y = anchor
-    half = max(40, int(span) // 2)
+    x = random_point_in(rect)[0]
+    y = (rect[1] + rect[3]) // 2
+    half = max(20, int(span) // 2)
     y1 = y + half if direction == "down" else y - half
     y2 = y - half if direction == "down" else y + half
     y1, y2 = max(10, min(y1, 709)), max(10, min(y2, 709))
     if abs(y2 - y1) < 20:
         return False
     p1, p2 = (int(x), int(y1)), (int(x), int(y2))
+    duration = round(min(0.6, 0.18 + abs(y2 - y1) / 1200), 2)  # 滑得越远，手指按得越久
     method = getattr(getattr(device.config.script, "device", None), "control_method", "minitouch")
     try:
         if method == "minitouch":
@@ -492,15 +528,20 @@ def drag_scroll(device, anchor, direction, span=SCROLL_DRAG_SPAN) -> bool:
         elif method == "window_message":
             device.swipe_window_message(p1, p2)
         elif method == "uiautomator2":
-            device.swipe_uiautomator2(p1, p2, duration=0.3)
+            device.swipe_uiautomator2(p1, p2, duration=duration)
         elif method == "scrcpy":
             device.swipe_scrcpy(p1, p2)
         else:
-            device.swipe_adb(p1, p2, duration=0.3)
+            device.swipe_adb(p1, p2, duration=duration)
     except Exception as exc:  # noqa: BLE001 - 单次滚动失败不该让整层直接崩
         log(f"  … 拖动滚动失败：{type(exc).__name__}: {exc}")
         return False
     return True
+
+
+def scroll_span(notches) -> int:
+    """滚轮格数 → 拖动距离：没滚轮时「每次滚动格数」靠滑动距离体现，不能让它不起作用。"""
+    return max(60, min(int(notches) * 60, 600))
 
 
 def run_scroll_search(device, opt: dict, tag: str) -> tuple[bool, str]:
@@ -512,8 +553,11 @@ def run_scroll_search(device, opt: dict, tag: str) -> tuple[bool, str]:
         return False, "未设置目标图片：编辑时先抓图，再在图上框选要点击的图案"
     deadline = time.monotonic() + opt["timeout"]
     best, ticks, method = 0.0, 0, opt["method"]
-    log(f"  滚动寻找：鼠标停在 {opt['anchor']}，{'向上' if opt['direction'] == 'up' else '向下'}"
-        f" ×{opt['wheel']} 格 / {opt['interval']:g}s，超时 {opt['timeout']:g}s")
+    area = opt["anchor_rect"]
+    span = scroll_span(opt["wheel"])
+    log(f"  滚动寻找：鼠标在 ({area[0]},{area[1]})-({area[2]},{area[3]}) 内随机停留，"
+        f"{'向上' if opt['direction'] == 'up' else '向下'}"
+        f" ×{opt['wheel']} 格 / {opt['interval']:g}s（拖动时滑 {span}px），超时 {opt['timeout']:g}s")
     while True:
         score, cx, cy = match_template(device.screenshot(), template)
         best = max(best, score)
@@ -526,9 +570,9 @@ def run_scroll_search(device, opt: dict, tag: str) -> tuple[bool, str]:
             break
         ticks += 1
         if method == "drag":
-            ok = drag_scroll(device, opt["anchor"], opt["direction"])
+            ok = drag_scroll(device, area, opt["direction"], span)
         else:
-            ok = wheel_scroll(device, opt["anchor"], opt["direction"], opt["wheel"])
+            ok = wheel_scroll(device, area, opt["direction"], opt["wheel"])
             if ok:
                 log(f"  … 滚轮 {opt['direction'] == 'up' and '上' or '下'}滚 {opt['wheel']} 格")
             elif method == "wheel":
@@ -536,7 +580,7 @@ def run_scroll_search(device, opt: dict, tag: str) -> tuple[bool, str]:
             else:  # auto：拿不到句柄就退回拖动，两条路都能滚动
                 log("  … 控制方式为 adb/minitouch，拿不到窗口句柄，改用拖动滚动")
                 method = "drag"
-                ok = drag_scroll(device, opt["anchor"], opt["direction"])
+                ok = drag_scroll(device, area, opt["direction"], span)
         if not ok:
             return False, "滚动动作执行失败"
         device.sleep(opt["interval"])
@@ -606,7 +650,9 @@ def run_plan(config_name: str, plan: dict) -> bool:
         scroll_mode = (st.get("mode") or "direct") == "scroll"
         scroll_opt = as_scroll(st.get("scroll")) if scroll_mode else {}
         if scroll_mode:
-            log(f"第 {i}/{len(steps)} 层「{name}」：滚动寻找并点击，鼠标点 {scroll_opt['anchor']}，"
+            area = scroll_opt["anchor_rect"]
+            log(f"第 {i}/{len(steps)} 层「{name}」：滚动寻找并点击，鼠标在 "
+                f"({area[0]},{area[1]})-({area[2]},{area[3]}) 内随机停留，"
                 f"{'向上' if scroll_opt['direction'] == 'up' else '向下'}滚动 ×{scroll_opt['wheel']} 格"
                 f"（{SCROLL_METHOD_LABEL[scroll_opt['method']]}），"
                 f"匹配度 {scroll_opt['threshold']:g}，寻找超时 {scroll_opt['timeout']:g}s，"
