@@ -1,10 +1,10 @@
 {
-  "name": "oas-studio",
-  "productName": "OAS Studio",
-  "version": "1.1.28",
-  "description": "阴阳师自动化控制台 · 多实例管理与任务编排（引擎解耦版）",
+  "name": "yyjio",
+  "productName": "YYJio",
+  "version": "1.0.0",
+  "description": "痒痒鸡 · 阴阳师自动化控制台（多实例管理与任务编排，引擎解耦版）",
   "main": "main.js",
-  "author": "OAS Studio",
+  "author": "YYJio",
   "license": "GPL-3.0",
   "scripts": {
     "start": "electron .",
@@ -16,9 +16,9 @@
     "electron-builder": "^26.0.12"
   },
   "build": {
-    "appId": "bot.oas.studio",
-    "productName": "OAS Studio",
-    "copyright": "OAS Studio · GPL-3.0 · based on runhey/OAS",
+    "appId": "bot.yyjio.app",
+    "productName": "YYJio",
+    "copyright": "YYJio · GPL-3.0 · based on runhey/OAS",
     "directories": {
       "output": "../dist"
     },
@@ -51,7 +51,8 @@
           "arch": ["x64"]
         }
       ],
-      "artifactName": "OAS-Studio-Setup-${version}.${ext}"
+      "icon": "build/icon.ico",
+      "artifactName": "YYJio-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -60,7 +61,10 @@
       "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "OAS Studio",
+      "shortcutName": "YYJio",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false
     }
   }

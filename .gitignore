@@ -13,6 +13,7 @@ engine/config/*.json.bak*
 engine/config/oas*.json
 # 控制台运行时生成的方案/编排/实例部署配置（首次启动自动重建）
 engine/config/gui_*.json
+engine/config/gui_avatars/
 engine/config/deploy.yaml
 engine/gui/.cache/
 engine/**/__pycache__/

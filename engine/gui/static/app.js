@@ -1,5 +1,5 @@
 /* ============================================================
-   OAS Studio · 前端
+   YYJio（痒痒鸡）· 前端
    数据流：REST(/api) + SSE(/api/runs/:id/stream)
    视图：总览（账号与模拟器） / 任务编排 / 执行记录 / 已知问题 / 高级
    ============================================================ */
@@ -58,6 +58,9 @@
     copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
     moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
     phone: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.6" r=".7"/>',
+    download: '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19h14"/>',
+    spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
   };
   const icon = (name, size) => `<svg viewBox="0 0 24 24" width="${size || 16}" height="${size || 16}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
 
@@ -100,6 +103,8 @@
     jobId: null,
     accountsDirty: false,
     flowsSignature: '',
+    busy: {}, // 账号名 → 临时状态（识别中/连接中），连接点闪烁用
+    busyErr: {}, // 账号名 → 上一次识别/连接失败的原因，成功或重新识别时清掉
   };
 
   const taskMeta = (key) => (state.catalog ? state.catalog.tasks.find((t) => t.key === key) : null) || { key, name: key, category: '其他', desc: '', team: false };
@@ -211,8 +216,8 @@
     const box = $('#topActions');
     if (state.view === 'overview') {
       box.append(
-        btn('刷新设备', 'refresh', () => loadDevices(true), 'ghost'),
-        btn('绑定新账号', 'plus', openBindDrawer, 'primary'),
+        btn('刷新设备', 'refresh', () => loadDevices(true), 'primary'),
+        btn('绑定新账号', 'plus', openBindDrawer, 'ghost'),
       );
     } else if (state.view === 'flows') {
       // 执行是「每份编排一个按钮」（在左侧列表里），顶栏只留新建。
@@ -244,10 +249,25 @@
     try {
       // 用户点「刷新设备」时带上 probe，让 bridge 主动 connect 一遍已知端口
       // （新开的模拟器实例不会自己注册到 adb server）。
+      if (notify) {
+        // 扫描/重连期间账号卡的连接点闪烁，让用户知道「正在连」
+        state.instances.forEach((inst) => markBusy(inst.name, '连接中'));
+        if (state.view === 'overview') render();
+      }
       const data = await api('/api/devices' + (notify ? '?probe=1' : ''));
       state.devices = data.devices || [];
       if (notify) toast(`扫描完成，在线设备 ${state.devices.length} 台`, state.devices.length ? 'ok' : 'err');
     } catch (e) { if (notify) toast('扫描失败：' + e.message, 'err'); }
+    finally {
+      if (notify) {
+        state.instances.forEach((inst) => clearBusy(inst.name));
+        await loadInstances().catch(() => {});
+        // 设备这次扫到了、账号也在线的，把之前「识别失败」的标记清掉
+        state.instances.forEach((inst) => {
+          if (inst.online) clearBusyErr(inst.name);
+        });
+      }
+    }
     if (state.view === 'overview') render();
   }
 
@@ -279,10 +299,42 @@
     try {
       const v = await api('/api/version');
       const node = $('#appVersion');
-      if (node) node.textContent = `v${v.version || '?'} · ${v.build || 'release'}`;
+      if (node) node.textContent = `v${v.version || '?'}`;
     } catch (e) {
       const node = $('#appVersion');
       if (node) node.textContent = '版本未知（桥接未连接）';
+    }
+  }
+
+  // 检查更新：只比对改名之后（1.0.0 起）的发布，避免旧品牌 OAS Studio 的高版本号误报
+  async function checkUpdate() {
+    const btn = document.querySelector('[data-act="checkUpdate"]');
+    const label = btn ? btn.textContent : '';
+    if (btn) { btn.classList.add('is-busy'); btn.disabled = true; btn.textContent = '检查中…'; }
+    try {
+      const r = await api('/api/check-update');
+      if (r && r.has_update) {
+        const lines = [`当前版本 ${r.current}，最新版本 ${r.latest}。`];
+        if (r.published) lines.push(`发布时间 ${String(r.published).slice(0, 10)}`);
+        lines.push('点「查看更新」会用浏览器打开下载页。');
+        const go = await askConfirm({
+          title: '发现新版本 ' + r.latest,
+          message: lines.join('\n'),
+          okText: '查看更新',
+          cancelText: '稍后再说',
+        });
+        if (go) window.open(r.url || 'https://github.com/TesBot/YYS-OAS-Bot/releases', '_blank');
+      } else if (r) {
+        toast(`已是最新版本 ${r.current}`, 'ok');
+      }
+    } catch (e) {
+      toast('检查更新失败：' + e.message, 'err');
+    } finally {
+      if (btn) {
+        btn.classList.remove('is-busy');
+        btn.disabled = false;
+        btn.textContent = label || '检查更新';
+      }
     }
   }
 
@@ -313,12 +365,16 @@
       text: '模拟器分辨率需设置为 1280×720，否则任务无法正常运行。',
     }));
 
-    // 检测到但还没绑定的模拟器，给一条窄表就够
-    const unbound = state.devices.filter((d) => !d.bound_to);
-    if (unbound.length) {
+    // 检测到但还没绑定的模拟器，给一条窄表就够。
+    // 正在识别 / 连接时不显示：这一台可能就是要绑的那台，先让它从列表里消失。
+    const scanning = Object.keys(state.busy || {}).length > 0;
+    const unbound = scanning ? [] : state.devices.filter((d) => !d.bound_to);
+    if (scanning) {
+      // 识别中：整段先不渲染
+    } else if (unbound.length) {
       root.appendChild(el('div', { class: 'section-title mt-20' },
         el('h2', { text: '未绑定的模拟器' }),
-        el('span', { class: 'sub', text: 'MuMu 12 多开端口从 16384 起递增。' }),
+        el('span', { class: 'sub' }),
       ));
       const table = el('table', { class: 'table' });
       table.innerHTML = '<thead><tr><th>设备</th><th>型号</th><th>分辨率</th><th></th></tr></thead>';
@@ -336,7 +392,7 @@
     } else if (!state.devices.length) {
       root.appendChild(el('p', {
         class: 'small muted mt-20',
-        text: 'adb 没有扫描到在线设备。点「绑定新账号」可手动填写 adb 地址（本机 MuMu 常用 127.0.0.1:16384，多开依次 +32）直接连接；模拟器刚启动时也可以先点「刷新设备」。',
+        text: '没有扫描到在线设备，可点「绑定新账号」手动填写 adb 地址。',
       }));
     }
   }
@@ -360,19 +416,49 @@
     return el('span', { class: 'badge ' + cls, text: label });
   }
 
+  // 账号卡上的临时状态：识别中 / 连接中，靠连接点闪烁表示「还在处理」
+  function markBusy(name, label) { if (name) { state.busy[name] = label || '处理中'; delete state.busyErr[name]; } }
+  function clearBusy(name) { if (name) delete state.busy[name]; }
+  function markBusyErr(name, msg) {
+    if (!name) return;
+    // 引擎的异常经常只有一句「截图失败：」带不出原因，这种就换成默认提示
+    const text = String(msg || '').trim();
+    state.busyErr[name] = text.length >= 6 ? text : '识别失败，请确认模拟器已连接并停在游戏画面';
+  }
+  function clearBusyErr(name) { if (name) delete state.busyErr[name]; }
+
+  function avatarEl(inst) {
+    // 有游戏头像就用头像（圆形裁好、圆外透明），没有就退回首字母
+    const initial = (inst.nickname || inst.name).slice(0, 1).toUpperCase();
+    const box = el('span', { class: 'avatar' + (inst.primary ? '' : ' sub') });
+    if (inst.avatar) {
+      const img = el('img', { class: 'avatar-photo', alt: '', src: `/api/instances/${encodeURIComponent(inst.name)}/avatar` });
+      img.addEventListener('error', () => { img.remove(); box.textContent = initial; });
+      box.classList.add('avatar-photo-box');
+      box.appendChild(img);
+    } else {
+      box.textContent = initial;
+    }
+    return box;
+  }
+
   function accountCard(inst) {
     // 紧凑两行：第一行是谁（昵称/区服）+ 两个动作，第二行在哪（模拟器 ID/分辨率/在跑什么）。
     // 「编排表」归编排页管，卡片上不再重复；「测试连接」由刷新设备覆盖，也不再占位。
     const device = state.devices.find((d) => d.serial === inst.serial) || null;
     const act = instActivity(inst);
+    const busy = state.busy && state.busy[inst.name];
     const serial = inst.serial || '未绑定模拟器';
     const card = el('div', { class: 'acct' });
-    const initial = (inst.nickname || inst.name).slice(0, 1).toUpperCase();
+    // 区服只在真的填过时才显示；没填就整段不占位，不再挂「未填区服」这种占位提示
+    const server = inst.server ? (inst.role_id ? `${inst.server} · ${inst.role_id}` : inst.server) : '';
 
     card.appendChild(el('div', { class: 'acct-row' },
-      el('div', { class: 'avatar' + (inst.primary ? '' : ' sub'), text: initial }),
+      avatarEl(inst),
       el('strong', { class: 'acct-name', title: inst.nickname || inst.name, text: inst.nickname || inst.name }),
-      el('span', { class: 'acct-server', text: inst.server ? `${inst.server} · ${inst.role_id || '未填ID'}` : '未填区服' }),
+      inst.nickname && inst.nickname !== inst.name
+        ? el('span', { class: 'acct-alias', text: inst.name }) : null,
+      server ? el('span', { class: 'acct-server', text: server }) : null,
       el('div', { class: 'grow' }),
       el('div', { class: 'acct-actions' },
         btn('编辑资料', 'sliders', () => openProfileDrawer(inst), 'ghost', 'sm'),
@@ -380,12 +466,22 @@
       ),
     ));
 
+    // 第二行：连接状态。识别/连接期间只留「识别中…」，不和「未连接」抢版面；
+    // 失败了才把状态标红并写明原因，成功就正常显示已连接。
+    const busyLabel = busy ? `${busy}…` : '';
+    const errText = state.busyErr[inst.name] || '';
+    const connText = busy ? busyLabel : (errText ? '识别失败' : (inst.online ? '已连接' : '未连接'));
+    const connClass = busy ? 'is-busy' : (errText || !inst.online ? 'is-off' : 'is-on');
+    const dotClass = busy ? 'dot-busy' : (inst.online && !errText ? 'dot-ok' : 'dot-err');
+    const dotTitle = busy ? busyLabel : (errText || (inst.online ? '模拟器已连接' : '模拟器未连接'));
+
     card.appendChild(el('div', { class: 'acct-row acct-row-meta' },
-      el('span', { class: 'dot ' + (inst.online ? 'dot-ok' : 'dot-err') }),
+      el('span', { class: 'dot ' + dotClass, title: dotTitle }),
+      el('span', { class: 'acct-conn ' + connClass, title: errText, text: connText }),
       el('span', { class: 'acct-serial', title: serial, text: serial }),
-      device && device.resolution ? el('span', { class: 'muted', text: '· ' + device.resolution }) : null,
-      !device ? el('span', { class: 'muted', text: '· 未扫描到' }) : null,
-      !inst.online ? el('span', { class: 'muted', text: '· 离线' }) : null,
+      !busy && device && device.resolution
+        ? el('span', { class: 'muted', text: '· ' + device.resolution }) : null,
+      !busy && !device ? el('span', { class: 'muted', text: '· 未扫描到' }) : null,
       act.tone === 'run' ? el('span', { class: 'badge badge-accent', text: '执行中' }) : null,
       act.tone === 'run' && act.detail
         ? el('span', { class: 'acct-act-text muted', title: act.detail, text: act.detail }) : null,
@@ -412,7 +508,13 @@
     const tip = last
       ? `确定解绑账号 ${name}？\n这是最后一个账号，解绑后总览会变成空态，随时可以重新绑定。`
       : `确定解绑账号 ${name}？\n配置将被删除且不保留备份，编排表里的引用会一并摘掉。`;
-    if (!confirm(tip)) return;
+    const agreed = await askConfirm({
+      title: last ? '解绑最后一个账号' : '解绑账号',
+      message: tip,
+      okText: '解绑',
+      danger: true,
+    });
+    if (!agreed) return;
     try {
       const r = await api(`/api/instances/${name}`, { method: 'DELETE' });
       if (r && r.remaining === 0) toast('已解绑，当前没有账号了，可重新绑定', 'ok');
@@ -423,6 +525,8 @@
   }
 
   function openBindDrawer(serial) {
+    // 这几个入口把它直接当 click 回调用，参数会是事件对象，不是 adb 地址
+    if (typeof serial !== 'string') serial = '';
     const devices = state.devices.filter((d) => !d.bound_to);
     const body = el('div');
     const nameInput = el('input', { class: 'input', placeholder: '英文/数字，如 oas2（与配置文件同名）', value: suggestName() });
@@ -466,17 +570,14 @@
     }, 'ghost');
 
     body.append(
-      field('实例名（配置文件名）', nameInput, '英文短名，用于 config/<name>.json，也是编排表里的账号标识。'),
-      field('adb 地址', el('div', { class: 'row' }, serialInput, connectBtn),
-        devices.length
-          ? '从下拉里选一台已扫描到的模拟器，或直接填写端口/局域网地址后点「连接」。'
-          : '没有扫描到模拟器？填写 adb 地址（MuMu 12 单开是 127.0.0.1:16384，多开依次 +32）后点「连接」。'),
+      field('实例名', nameInput),
+      field('adb 地址', el('div', { class: 'row' }, serialInput, connectBtn)),
       el('div', { class: 'form-grid' },
         field('游戏昵称', nickInput),
         field('区服', serverInput),
       ),
       el('div', { class: 'form-grid' },
-        field('角色 ID', roleInput, '仅用于界面区分，可留空。'),
+        field('角色 ID', roleInput),
         el('div', { class: 'field' }, el('label', { text: '主号' }),
           el('label', { class: 'switch' }, primary, el('span', { class: 'track' }),
             el('span', { class: 'small muted', text: '作为默认队长端' }))),
@@ -507,8 +608,29 @@
               method: 'PUT',
               body: { nickname: nickInput.value.trim() || name, server: serverInput.value.trim(), role_id: roleInput.value.trim(), primary: primary.checked },
             });
-            toast('账号已绑定', 'ok');
+            // 绑定后立刻抓一张画面，认昵称 + 裁头像；识别不出来不影响绑定。
+            // 先关抽屉再识别，账号卡露出来，连接点闪烁代表「正在识别信息」。
             closeDrawer();
+            markBusy(name, '识别中');
+            await loadInstances().catch(() => {});
+            render();
+            toast('正在从游戏画面识别昵称和头像…', 'ok');
+            let scanned = null;
+            try {
+              scanned = await api(`/api/instances/${name}/profile-scan`, { method: 'POST' });
+            } catch (e) {
+              markBusyErr(name, e.message);
+              toast('账号已绑定，但自动识别失败：' + e.message, 'err');
+            } finally {
+              clearBusy(name);
+            }
+            if (scanned && scanned.profile && scanned.profile.nickname) {
+              toast('账号已绑定：' + scanned.profile.nickname, 'ok');
+            } else if (scanned) {
+              toast('账号已绑定（没认出昵称，可点「编辑资料」手填）', 'ok');
+            } else {
+              toast('账号已绑定', 'ok');
+            }
             await loadInstances();
             await loadDevices();
             render();
@@ -529,12 +651,43 @@
     const serverInput = el('input', { class: 'input', value: inst.server || '' });
     const roleInput = el('input', { class: 'input', value: inst.role_id || '' });
     const primary = el('input', { type: 'checkbox', checked: inst.primary });
+    const preview = avatarEl(inst);
+    preview.classList.add('avatar-lg');
+    const rescan = btn('从当前画面重新识别', 'refresh', async () => {
+      rescan.disabled = true;
+      markBusy(inst.name, '识别中');
+      try {
+        const r = await api(`/api/instances/${inst.name}/profile-scan`, { method: 'POST' });
+        const p = (r && r.profile) || {};
+        if (p.nickname) nickInput.value = p.nickname;
+        if (p.avatar) {
+          preview.classList.add('avatar-photo-box');
+          preview.textContent = '';
+          const img = el('img', { class: 'avatar-photo', alt: '', src: `/api/instances/${encodeURIComponent(inst.name)}/avatar?v=${Date.now()}` });
+          preview.appendChild(img);
+        }
+        toast(p.nickname ? '已识别：' + p.nickname : '没认出昵称，可手动填写', p.nickname ? 'ok' : 'err');
+      } catch (e) {
+        markBusyErr(inst.name, e.message);
+        toast('识别失败：' + e.message, 'err');
+      } finally {
+        rescan.disabled = false;
+        clearBusy(inst.name);
+        render();
+      }
+    }, 'ghost', 'sm');
     const body = el('div', {},
+      el('div', { class: 'profile-head' },
+        preview,
+        el('div', { class: 'grow' },
+          rescan,
+        ),
+      ),
       field('游戏昵称', nickInput),
       el('div', { class: 'form-grid' }, field('区服', serverInput), field('角色 ID', roleInput)),
       el('div', { class: 'field' }, el('label', { text: '主号（默认队长端）' }),
         el('label', { class: 'switch' }, primary, el('span', { class: 'track' }))),
-      el('p', { class: 'hint', text: '这些信息只保存在 config/gui_profiles.json，不会写入引擎配置，也不影响执行。' }),
+      null,
     );
     openDrawer({
       kicker: '账号绑定',
@@ -649,8 +802,7 @@
   function flowGroup(inst, flows) {
     const group = el('div', { class: 'fl-group' });
     group.appendChild(el('div', { class: 'fl-group-head' },
-      el('div', { class: 'avatar' + (inst.primary ? '' : ' sub'),
-        text: (inst.nickname || inst.name).slice(0, 1).toUpperCase() }),
+      avatarEl(inst),
       el('div', { class: 'fl-group-id' },
         el('strong', { text: inst.nickname || inst.name }),
         el('span', { text: inst.serial || '未绑定模拟器' }),
@@ -773,16 +925,12 @@
     );
     detail.appendChild(addBar);
 
-    // 联动说明
+    // 联动说明（只留一句够用的）
     if (flow.accounts.length > 1) {
-      detail.appendChild(el('div', { class: 'panel', style: 'margin-top:18px' },
-        el('div', { class: 'panel-head' }, el('h3', { text: '组队联动说明' })),
-        el('div', { class: 'panel-body' },
-          el('p', { class: 'small muted', text: '联动分两步：先插入一条「自定义组队」指定队长与队员（队长不必是第一个账号，编排会归到队长名下），再把带「可联动」标记的玩法设为「组队执行」。' }),
-          el('p', { class: 'small muted mt-8', text: '执行时队长写入 user_status=leader、队员写入 member；同时把队员的「游戏内昵称」自动回填到队长 invite_config.friend_1/2，队长按昵称在好友列表里 OCR 精确匹配后发出邀请。' }),
-          el('p', { class: 'small muted mt-8', text: '前提：两账号互为好友或同寮、队员在线且启动前停在庭院，绑定资料里的「游戏内昵称」必须填游戏内全称。引擎最多邀请 2 名队员，3 人及以上暂不支持。' }),
-        ),
-      ));
+      detail.appendChild(el('p', {
+        class: 'small muted mt-14',
+        text: '组队：先加「自定义组队」指定队长与队员，再把玩法设为「组队执行」。两账号需互为好友或同寮。',
+      }));
     }
   }
 
@@ -924,7 +1072,7 @@
     }
     const hint = el('p', { class: 'hint' });
     body.append(
-      el('p', { class: 'hint', style: 'margin-bottom:14px', text: '这条步骤不执行游戏操作，只把多个账号编成一队。后面的组队玩法（御魂/觉醒/探索等）会自动沿用这里的队长与队员。' }),
+      el('p', { class: 'hint', style: 'margin-bottom:14px', text: '这一步只编队，不执行游戏操作。' }),
       el('div', { class: 'field' }, el('label', { text: '队长（负责建房、邀请）' }), leaderBox),
       el('div', { class: 'field' }, el('label', { text: '队员（负责接受邀请）' }), memberBox),
       hint,
@@ -1164,7 +1312,13 @@
           catch (e) { toast('复制失败：' + e.message, 'err'); }
         }, 'ghost'));
         ops.appendChild(smallBtn('删除', 'trash', async () => {
-          if (!confirm(`删除方案「${p.name}」？`)) return;
+          const agreed = await askConfirm({
+          title: '删除自定义方案',
+          message: `方案「${p.name}」删除后不能恢复，用到它的编排步骤会失去配置。`,
+          okText: '删除',
+          danger: true,
+        });
+        if (!agreed) return;
           try { await api(`/api/custom-clicks/${p.id}`, { method: 'DELETE' }); await loadCustomPlans(); paint(); }
           catch (e) { toast('删除失败：' + e.message, 'err'); }
         }, 'danger'));
@@ -1708,7 +1862,7 @@
       title: '绑定账号',
       body: el('div', {},
         el('div', { class: 'field' }, el('label', { text: '账号（顺序即队长 → 队员；点选可增减）' }), chips),
-        el('p', { class: 'hint', text: '第一个账号作为队长端，其余为队员端。删除账号后，指向它的联动步骤会在账号不足 2 个时自动降级为单人。' }),
+        el('p', { class: 'hint', text: '第一个账号为队长端，其余为队员端。' }),
       ),
       foot: [
         btn('取消', 'x', closeDrawer, 'ghost'),
@@ -1755,7 +1909,7 @@
       kicker: '自定义方案', title: '存为自定义方案',
       body: el('div', {},
         field('方案名称', nameInput),
-        el('p', { class: 'hint', text: '方案只保留任务与参数，不含账号和模拟器，可长期复用。' }),
+        null,
       ),
       foot: [
         btn('取消', 'x', closeDrawer, 'ghost'),
@@ -1775,7 +1929,13 @@
   }
 
   async function deleteFlow(flow) {
-    if (!confirm(`删除编排「${flow.name}」？`)) return;
+    const agreed = await askConfirm({
+      title: '删除编排表',
+      message: `编排「${flow.name}」和它的步骤会一起删除，账号绑定不受影响。`,
+      okText: '删除',
+      danger: true,
+    });
+    if (!agreed) return;
     const owner = flowOwner(flow);
     await api(`/api/flows/${flow.id}`, { method: 'DELETE' });
     state.flowId = null;
@@ -2294,20 +2454,24 @@
 
     const tabs = el('div', { class: 'chips' });
     const grid = el('div', { class: 'grid grid-3', style: 'margin-top:12px' });
-    const teamCard = el('div', { class: 'task-card', style: 'margin-bottom:12px' },
-      el('div', { class: 'tc-top' },
-        el('span', { class: 'tc-name', text: '自定义组队' }),
-        el('span', { class: 'badge badge-gold', text: '队伍配置' })),
-      el('div', { class: 'tc-desc', text: '指定队长与队员，插在刷本任务之前；后面的组队玩法沿用这支队伍。' }),
+    // 两个「手工配置」入口：上下两行各占整行，组队那条压成一行（只放一行说明 + 按钮）
+    const teamCard = el('div', { class: 'task-card quick team' },
+      el('div', { class: 'tc-body' },
+        el('div', { class: 'tc-top' },
+          el('span', { class: 'tc-name', text: '自定义组队' }),
+          el('span', { class: 'badge badge-gold', text: '队伍配置' })),
+        el('div', { class: 'tc-desc', text: '指定队长和队员，插在刷本任务前面，后面的组队玩法就按这支队伍执行。' })),
       el('div', { class: 'tc-ops' }, btn('添加这一步', 'users', () => { closeModal(); openTeamDrawer(null); }, 'primary sm')),
     );
-    const clickCard = el('div', { class: 'task-card', style: 'margin-bottom:12px' },
+    const clickCard = el('div', { class: 'task-card quick' },
       el('div', { class: 'tc-top' },
         el('span', { class: 'tc-name', text: '自定义点击' }),
-        el('span', { class: 'badge badge-gold', text: 'OCR / 找图 + 拟人点击' })),
-      el('div', { class: 'tc-desc', text: '每层可选「直接识别并点击」（OCR 判定）或「滚动寻找并点击」（边滚边找图），命中后拟人点击。' }),
+        el('span', { class: 'badge badge-gold', text: '设置自动识别并点击' })),
+      el('div', { class: 'tc-desc', style: 'white-space:pre-line',
+        text: '两种方式识别并执行动作：\n1. 抓图并 OCR 识别文字，模拟点击框选区内位置。\n2. 滚动并识别目标图案，识别后并模拟点击目标图案。' }),
       el('div', { class: 'tc-ops' }, btn('选择 / 新建方案', 'plus', () => { closeModal(); openCustomClickLibrary(); }, 'primary sm')),
     );
+    const quickCards = el('div', { class: 'tc-quick' }, teamCard, clickCard);
     const cats = ['全部'].concat((state.catalog ? state.catalog.categories : []).map((c) => c.key));
 
     // 分类说明直接挂在标签下面：选哪个分类就说明这个分类在游戏里是什么。
@@ -2361,7 +2525,7 @@
     paintTabs(); paintCatLine(); paintGrid();
     openModal({
       title: '添加任务',
-      body: el('div', {}, teamCard, clickCard,
+      body: el('div', {}, quickCards,
         el('div', { class: 'lib-toolbar' },
           el('div', { class: 'search' }, el('span', { html: icon('search', 14) }), search)),
         tabs, catLine, grid),
@@ -2399,7 +2563,13 @@
               closeModal();
             }, 'sm primary'),
             btn('删除', 'trash', async () => {
-              if (!confirm(`删除方案「${tpl.name}」？`)) return;
+              const agreed = await askConfirm({
+              title: '删除编排模板',
+              message: `模板「${tpl.name}」删除后不能恢复。`,
+              okText: '删除',
+              danger: true,
+            });
+            if (!agreed) return;
               await api(`/api/flow-library/${tpl.id}`, { method: 'DELETE' });
               await loadFlowLib();
               closeModal();
@@ -2898,6 +3068,54 @@
     if (window.__es) { window.__es.close(); window.__es = null; }
   }
 
+  /* ---------------- 统一确认弹窗 ---------------- */
+  // 原生 confirm() 在各系统上样式又土又不可控，这里统一成本项目的卡片样式。
+  // 返回 Promise<boolean>：确定 true，取消/ESC/点遮罩 false。
+  function askConfirm(opts) {
+    const o = opts || {};
+    const title = o.title || '请确认';
+    const message = o.message || '';
+    const okText = o.okText || '确定';
+    const cancelText = o.cancelText || '取消';
+    const danger = !!o.danger;
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKey, true);
+        wrap.classList.add('is-closing');
+        setTimeout(() => wrap.remove(), 150);
+        resolve(value);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.stopPropagation(); finish(false); }
+        else if (e.key === 'Enter') { e.stopPropagation(); finish(true); }
+      };
+      const okBtn = el('button', { class: 'btn ' + (danger ? 'btn-danger-solid' : 'btn-primary'), text: okText });
+      const cancelBtn = el('button', { class: 'btn btn-ghost', text: cancelText });
+      okBtn.addEventListener('click', () => finish(true));
+      cancelBtn.addEventListener('click', () => finish(false));
+      const lines = String(message).split('\n');
+      const body = el('div', { class: 'confirm-body' });
+      lines.forEach((line, i) => {
+        if (i) body.appendChild(el('div', { class: 'confirm-gap' }));
+        body.appendChild(el('div', { text: line }));
+      });
+      const wrap = el('div', { class: 'confirm-mask' },
+        el('div', { class: 'confirm-card', role: 'dialog', 'aria-modal': 'true' },
+          el('div', { class: 'confirm-head' },
+            el('span', { class: 'confirm-icon' + (danger ? ' is-danger' : ''), html: icon(danger ? 'trash' : 'info', 15) }),
+            el('h3', { text: title })),
+          body,
+          el('div', { class: 'confirm-foot' }, cancelBtn, okBtn)));
+      wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) finish(false); });
+      document.body.appendChild(wrap);
+      document.addEventListener('keydown', onKey, true);
+      setTimeout(() => okBtn.focus(), 20);
+    });
+  }
+
   function openModal({ title, body, foot }) {
     const card = $('#modalCard');
     card.innerHTML = '';
@@ -2925,6 +3143,7 @@
   const ACTIONS = {
     go: (btn) => go(btn.dataset.view),
     reload: () => refreshAll().then(() => toast('已刷新', 'ok')),
+    checkUpdate: () => checkUpdate(),
     openIssues: () => go('issues'),
     closeDrawer,
     closeModal,
@@ -2992,7 +3211,8 @@
         $('#logDock').style.height = savedH;
         document.body.style.setProperty('--dock-h', savedH);
       }
-      if (localStorage.getItem(DOCK_STORE_KEY) === '1') dockSetOpen(true);
+      // 日志坞默认收起：只在开始跑任务（或已有任务在跑）时自动展开，避免一启动就占掉半个屏幕
+      dockSetOpen(false);
     } catch (e) { /* ignore */ }
     try {
       await refreshAll();

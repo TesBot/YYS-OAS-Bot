@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""OAS Studio 桥接服务。
+"""YYJio（痒痒鸡）桥接服务。
 
 职责边界（UI 与引擎解耦的关键层）：
 - 对 UI：只暴露领域模型（实例 / 任务 / 计划 / 运行），REST + SSE，不泄露引擎内部结构；
@@ -12,16 +12,20 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import copy
 import json
 import os
+import queue
 import random
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from collections import deque
 from datetime import datetime
@@ -29,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +43,8 @@ PLAN_FILE = CONFIG_DIR / "plans.json"
 FLOW_FILE = CONFIG_DIR / "gui_flows.json"
 FLOW_LIBRARY_FILE = CONFIG_DIR / "gui_flow_library.json"
 PROFILE_FILE = CONFIG_DIR / "gui_profiles.json"
+# 账号头像：绑定账号时从游戏画面里裁下来的圆形头像，按实例名存一份
+AVATAR_DIR = CONFIG_DIR / "gui_avatars"
 CUSTOM_CLICK_FILE = CONFIG_DIR / "gui_custom_clicks.json"
 SCHEMA_CACHE = Path(__file__).resolve().parent / ".cache" / "schema.json"
 # 便携整包布局：bridge 由打包内嵌的 Python 直接运行，子进程一律用当前解释器；
@@ -57,7 +63,16 @@ ADB = next((p for p in ADB_CANDIDATES if p.exists()), ADB_CANDIDATES[-1])
 sys.path.insert(0, str(ROOT))
 from gui import catalog  # noqa: E402
 
-app = FastAPI(title="OAS Studio Bridge", version="1.0.0")
+# ── 品牌与版本 ──
+APP_NAME = "YYJio"
+APP_VERSION = "1.0.0"
+APP_BUILD = "yyjio"
+GITHUB_REPO = "TesBot/YYS-OAS-Bot"
+RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
+# 只看改名之后（1.0.0 起）的发布：更早的 tag 属于旧品牌 OAS Studio，版本号更高但不能比
+ASSET_PREFIX = "YYJio-Setup-"
+
+app = FastAPI(title=f"{APP_NAME} Bridge", version=APP_VERSION)
 
 _CONFIG_LOCK = threading.RLock()
 _RUNS: dict[str, dict] = {}
@@ -505,6 +520,153 @@ def delete_profile(name: str):
     return {"ok": True}
 
 
+def _avatar_path(name: str) -> Path:
+    return AVATAR_DIR / f"{name}.png"
+
+
+# 识别昵称/头像要导入整个引擎并加载 OCR 模型，冷启动 7 秒左右。
+# 这里养一个常驻子进程，引擎和模型只加载一次，之后每次识别 1 秒左右。
+_SCAN_LOCK = threading.Lock()
+_SCAN_WORKER: dict = {"proc": None}
+
+
+def _scan_worker_stop() -> None:
+    proc = _SCAN_WORKER.get("proc")
+    _SCAN_WORKER["proc"] = None
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.kill()
+    except Exception:  # noqa: BLE001 - 已经退出就算了
+        pass
+
+
+def _scan_worker_start():
+    cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "profile_scan.py"), "--serve"]
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                            errors="replace", bufsize=1, **kwargs)
+    _SCAN_WORKER["proc"] = proc
+    return proc
+
+
+atexit.register(_scan_worker_stop)
+
+
+def _scan_worker_call(payload: dict, timeout: float = 60.0) -> dict:
+    """把一条请求丢给常驻进程，拿回一条结果。进程挂了会抛 RuntimeError 由调用方兜底。"""
+    with _SCAN_LOCK:
+        proc = _SCAN_WORKER.get("proc")
+        if proc is None or proc.poll() is not None:
+            proc = _scan_worker_start()
+        try:
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+        except Exception as exc:  # noqa: BLE001
+            _scan_worker_stop()
+            raise RuntimeError(f"识别进程写入失败：{exc}") from exc
+
+        box: queue.Queue = queue.Queue()
+
+        def _reader() -> None:
+            try:
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        box.put(None)
+                        return
+                    line = line.strip()
+                    if not (line.startswith("{") and line.endswith("}")):
+                        continue  # 引擎日志混在 stdout 里，跳过
+                    try:
+                        data = json.loads(line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if isinstance(data, dict) and "ok" in data:
+                        box.put(data)
+                        return
+            except Exception:  # noqa: BLE001
+                box.put(None)
+
+        threading.Thread(target=_reader, daemon=True).start()
+        try:
+            data = box.get(timeout=timeout)
+        except queue.Empty:
+            _scan_worker_stop()
+            raise HTTPException(504, "识别超时：模拟器可能没连上，或画面还没加载完")
+        if data is None:
+            _scan_worker_stop()
+            raise RuntimeError("识别进程意外退出")
+        return data
+
+
+def _scan_run_once(name: str, out: Path) -> dict:
+    """兜底：起一个新进程跑一次（常驻进程不可用时用）。"""
+    cmd = [str(PYTHON), "-X", "utf8", "-B", str(ROOT / "gui" / "profile_scan.py"),
+           "--config", name, "--out-avatar", str(out)]
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=60, **kwargs)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "识别超时：模拟器可能没连上，或画面还没加载完")
+
+    for line in reversed((res.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            return data
+    detail = (res.stderr or res.stdout or "").strip()[-300:]
+    raise HTTPException(500, "识别失败：" + (detail or "识别脚本没有输出结果"))
+
+
+@app.post("/api/instances/{name}/profile-scan")
+def scan_profile(name: str):
+    """抓一张当前画面，认出游戏昵称并裁下圆形头像，写进账号资料。
+
+    绑定账号时前端自动调用；「编辑资料」里也可以手动重新识别。
+    """
+    _instance_path(name)
+    out = _avatar_path(name)
+    try:
+        data = _scan_worker_call({"config": name, "out_avatar": str(out)})
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - 常驻进程起不来时退回一次性进程
+        data = _scan_run_once(name, out)
+    if not data.get("ok"):
+        raise HTTPException(500, str(data.get("error") or "识别失败"))
+
+    profiles = _load_profiles()
+    current = profiles.get(name) or {}
+    nickname = str(data.get("nickname") or "").strip()
+    if nickname:
+        current["nickname"] = nickname
+    current["avatar"] = str(data.get("avatar") or "")
+    profiles[name] = current
+    _save_profiles(profiles)
+    return {"ok": True, "profile": current, "texts": data.get("texts") or []}
+
+
+@app.get("/api/instances/{name}/avatar")
+def instance_avatar(name: str):
+    """账号头像（PNG，圆外透明）。没有就 404，前端回退到首字母。"""
+    path = _avatar_path(name)
+    if not path.exists():
+        raise HTTPException(404, "还没有头像")
+    return FileResponse(path, media_type="image/png",
+                        headers={"Cache-Control": "no-cache, max-age=0"})
+
+
 # ────────────────────────── 任务表单 schema ──────────────────────────
 
 def _load_schema_cache() -> dict:
@@ -657,7 +819,83 @@ def _describe_field(name: str, prop: dict, defs: dict, i18n: dict) -> dict:
 def version():
     """安装包版本。升级后用来确认用户实际跑的是哪一份 bridge，而不是旧包。"""
     # 与控制台版本对齐：这个端点就是用来确认用户实际跑的是哪一份 bridge 的
-    return {"version": "1.1.28", "build": "scroll-find"}
+    return {"version": APP_VERSION, "build": APP_BUILD}
+
+
+def _version_tuple(text: str) -> tuple:
+    parts = []
+    for piece in str(text).strip().lstrip("vV").split("."):
+        digits = re.sub(r"\D", "", piece)
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+@app.get("/api/check-update")
+def check_update():
+    """查 GitHub Releases 有没有比当前更新的版本（只认同品牌安装包）。"""
+    current = APP_VERSION
+    result = {
+        "ok": True,
+        "current": current,
+        "latest": current,
+        "has_update": False,
+        "url": RELEASES_URL,
+        "name": "",
+        "notes": "",
+        "published": "",
+        "source": f"https://api.github.com/repos/{GITHUB_REPO}/releases",
+    }
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=20"
+    headers = {
+        "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+        "Accept": "application/vnd.github+json",
+    }
+    # 优先用 requests：它走系统代理且带连接复用，实测 0.6s；
+    # 而 urllib 在这台机器上要 20s（读响应被拖慢），只在没有 requests 时兜底。
+    try:
+        try:
+            import requests as _requests
+        except Exception:  # noqa: BLE001
+            _requests = None
+        if _requests is not None:
+            resp = _requests.get(url, headers=headers, timeout=8)
+            resp.raise_for_status()
+            releases = resp.json()
+        else:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=12) as response:
+                releases = json.loads(response.read().decode("utf-8"))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 网络问题一律回给前端提示
+        raise HTTPException(502, f"连不上 GitHub（{exc.__class__.__name__}）：{exc}")
+
+    best = None
+    best_key = _version_tuple(current)
+    for release in releases or []:
+        if release.get("draft"):
+            continue
+        names = " ".join(str(a.get("name") or "") for a in (release.get("assets") or []))
+        if ASSET_PREFIX not in names:
+            continue  # 旧品牌（OAS Studio）的发布不参与比较
+        tag = str(release.get("tag_name") or "")
+        key = _version_tuple(tag)
+        if key > best_key:
+            best_key = key
+            best = release
+
+    if best is not None:
+        result.update({
+            "has_update": True,
+            "latest": ".".join(str(x) for x in best_key),
+            "url": best.get("html_url") or RELEASES_URL,
+            "name": best.get("name") or best.get("tag_name") or "",
+            "notes": (best.get("body") or "")[:800],
+            "published": best.get("published_at") or "",
+        })
+    return result
 
 
 @app.get("/api/health")
@@ -697,6 +935,7 @@ def list_instances():
             "nickname": profile.get("nickname") or path.stem,
             "server": profile.get("server") or "",
             "role_id": profile.get("role_id") or "",
+            "avatar": profile.get("avatar") or "",
             "primary": bool(profile.get("primary")),
             "note": profile.get("note") or "",
             "serial": serial,
@@ -793,13 +1032,17 @@ def delete_instance(name: str):
     if touched:
         _save_flows(flows)
 
-    # 4. 删除配置（解绑不保留备份，顺带清掉历史 .bak / .tmp）
+    # 4. 删除配置（解绑不保留备份，顺带清掉历史 .bak / .tmp 与头像）
     path.unlink(missing_ok=True)
     for suffix in (".json.bak", ".json.tmp"):
         try:
             (CONFIG_DIR / f"{name}{suffix}").unlink(missing_ok=True)
         except OSError:
             pass
+    try:
+        _avatar_path(name).unlink(missing_ok=True)
+    except OSError:
+        pass
     return {"ok": True, "remaining": len(_instance_files())}
 
 
@@ -2066,6 +2309,23 @@ def index():
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+def _warm_scan_worker() -> None:
+    """后台先把识别进程拉起来（导入引擎 + 载 OCR 模型约 5 秒），
+    再给已有账号把 Device 也建好（每台约 3 秒），
+    这样用户点绑定时第一次识别也是秒开，不用再等冷启动。"""
+    try:
+        with _SCAN_LOCK:
+            if _SCAN_WORKER.get("proc") is None:
+                _scan_worker_start()
+    except Exception:  # noqa: BLE001 - 预热失败不影响功能，识别时还会再拉一次
+        return
+    for path in _instance_files():
+        try:
+            _scan_worker_call({"cmd": "warm", "config": path.stem}, timeout=40)
+        except Exception:  # noqa: BLE001 - 单台预热失败忽略
+            break
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -2073,7 +2333,8 @@ def main() -> None:
     args = parser.parse_args()
     import uvicorn
     _start_server_daemon()
-    print(f"OAS Studio bridge → http://{args.host}:{args.port}")
+    threading.Thread(target=_warm_scan_worker, name="warm-profile-scan", daemon=True).start()
+    print(f"{APP_NAME} bridge → http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

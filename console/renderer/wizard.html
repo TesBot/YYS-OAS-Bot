@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<title>OAS Studio · 启动配置</title>
+<title>YYJio · 启动配置</title>
 <style>
   :root {
     --bg: #f7f5f1; --panel: #ffffff; --line: #e7e1d8; --text: #24211d;
@@ -19,10 +19,9 @@
     display: flex; flex-direction: column; min-height: 100vh; overflow-y: auto;
   }
   .logo { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
-  .logo .mark {
-    width: 28px; height: 28px; border-radius: 8px; background: var(--accent);
-    color: #fff; display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 12px;
+  .logo img.mark {
+    width: 30px; height: 30px; border-radius: 9px; display: block;
+    box-shadow: 0 2px 8px rgba(184,73,31,.20), 0 0 0 1px rgba(120,90,60,.10);
   }
   h1 { font-size: 15px; margin: 0; }
   .sub { color: var(--text-3); font-size: 12px; margin: 2px 0 14px; }
@@ -63,7 +62,7 @@
 </style>
 </head>
 <body>
-  <div class="logo"><div class="mark">OAS</div><h1>启动配置</h1></div>
+  <div class="logo"><img class="mark" src="/static/icon.png" alt="YYJio" /><h1>启动配置</h1></div>
   <div class="sub">首次使用需安装 Python 运行环境（约 350 MB，只装一次）。</div>
 
   <div class="status-line">

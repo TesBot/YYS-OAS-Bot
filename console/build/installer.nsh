@@ -1,4 +1,4 @@
-; OAS Studio 安装器定制
+; YYJio（痒痒鸡）安装器定制
 ;
 ; 背景（三轮踩坑后的结论）：
 ;   1) 「无法关闭/请点重试」弹窗有两个来源，都在 electron-builder 模板里：
@@ -7,12 +7,12 @@
 ;         任一目标文件被占用 → 重试 5 次 → 弹窗。引擎全部文件都在 app-64.7z 里，
 ;         走的就是 b) 这条路。模板本身已通过 scripts/patch-nsis-template.mjs
 ;         打补丁移除所有弹窗（见该脚本）。
-;   2) 桥接服务 python 的 exe 在 %LOCALAPPDATA%\OAS Studio\runtime\python，
+;   2) 桥接服务 python 的 exe 在 %LOCALAPPDATA%\<productName>\runtime\python，
 ;      路径不在安装目录里。而 OCR 是 multiprocessing 子进程，命令行只有
 ;      `-c from multiprocessing...`，不含安装目录 → 按「命令行含 $INSTDIR」
 ;      的判据看不见它们；adbutils 拉起的 adb fork-server 也是孤儿存活
 ;      （工作目录锁定在 $INSTDIR\resources\engine）。
-;      因此判据改为「exe 路径在安装目录或 %LOCALAPPDATA%\OAS Studio 下」，
+;      因此判据改为「exe 路径在安装目录或 %LOCALAPPDATA%\<productName> 下」，
 ;      覆盖 Electron 全家、runtime python、adb、以及任何未来新增的孤儿。
 ;   3) 判据太宽的历史教训：卸载器/安装器的命令行或路径也可能命中关键词，
 ;      出现自锁或自杀。排除规则：
@@ -62,7 +62,7 @@
   ; 本宏在卸载器构建阶段也会被引用，那时 installUtil.nsh 尚未 include，
   ; GetInQuotes / GetFileParent 都不存在 → makensis 直接 abort。
 
-  DetailPrint "OAS: 检查上次的实例是否已完全退出…"
+  DetailPrint "YYJio: 检查上次的实例是否已完全退出…"
   StrCpy $R1 0
 
   oas_wait_loop:
@@ -73,13 +73,13 @@
 
     ; 第 2 秒起每轮先强杀，再等 500ms。前 2 秒不动手，给正常退出留时间。
     ${if} $R1 >= 4
-      DetailPrint "OAS: 仍有残留进程，强制结束（第 $R1 次检查）…"
+      DetailPrint "YYJio: 仍有残留进程，强制结束（第 $R1 次检查）…"
       !insertmacro oas_kill
     ${endIf}
 
     ; 45 秒（90 × 500ms）还不行就放弃等待，直接装。
     ${if} $R1 >= 90
-      DetailPrint "OAS: 等待超时，继续安装（残留文件会被尽力覆盖）。"
+      DetailPrint "YYJio: 等待超时，继续安装（残留文件会被尽力覆盖）。"
       Goto oas_wait_done
     ${endIf}
 
@@ -88,7 +88,7 @@
     Goto oas_wait_loop
 
   oas_wait_done:
-  DetailPrint "OAS: 环境已清空，开始安装。"
+  DetailPrint "YYJio: 环境已清空，开始安装。"
 !macroend
 
 ; ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@
 ;     1) config 下的用户数据（实例 oas*.json、自定义方案 gui_*.json、
 ;        deploy.yaml）被一起搬走清空，更新一次丢一次；
 ;     2) 任何一个文件被占用 → 整体回滚 Abort → 退出码非 0 → 重试 5 次
-;        → 弹「无法关闭 OAS Studio / 请点重试」——即使用户早就关了程序。
+;        → 弹「无法关闭 YYJio / 请点重试」——即使用户早就关了程序。
 ;
 ; 这里的策略：
 ;   - 直接 RMDir /r 删除，多轮重试兜住「杀进程后句柄延迟释放」的窗口；
@@ -110,15 +110,19 @@
 ;   - 卸载（非更新）不备份，用户数据随目录清理。
 !macro customRemoveFiles
   ${if} ${isUpdated}
-    DetailPrint "OAS: 备份 config 用户数据（实例 / 自定义方案 / 部署配置）…"
+    DetailPrint "YYJio: 备份 config 用户数据（账号实例 / 自定义方案 / 编排表 / 头像）…"
     CreateDirectory "$PLUGINSDIR\oas-keep"
-    CopyFiles /SILENT "$INSTDIR\resources\engine\config\oas*.json" "$PLUGINSDIR\oas-keep"
-    CopyFiles /SILENT "$INSTDIR\resources\engine\config\gui_*.json" "$PLUGINSDIR\oas-keep"
+    ; 账号实例文件名由用户自定（默认 oas1、oas2…，也可能被改过名），
+    ; 所以整个 *.json 一起备份，再剔掉 template.json（用新版本的模板更安全）。
+    CopyFiles /SILENT "$INSTDIR\resources\engine\config\*.json" "$PLUGINSDIR\oas-keep"
+    Delete "$PLUGINSDIR\oas-keep\template.json"
     CopyFiles /SILENT "$INSTDIR\resources\engine\config\deploy.yaml" "$PLUGINSDIR\oas-keep"
+    CreateDirectory "$PLUGINSDIR\oas-keep\gui_avatars"
+    CopyFiles /SILENT "$INSTDIR\resources\engine\config\gui_avatars\*.*" "$PLUGINSDIR\oas-keep\gui_avatars"
   ${endIf}
 
   SetOutPath $TEMP
-  DetailPrint "OAS: 删除旧版本文件（被占用的文件会跳过，不影响安装）…"
+  DetailPrint "YYJio: 删除旧版本文件（被占用的文件会跳过，不影响安装）…"
   RMDir /r $INSTDIR
   Sleep 500
   RMDir /r $INSTDIR
@@ -126,8 +130,11 @@
   RMDir /r $INSTDIR
 
   ${if} ${isUpdated}
-    DetailPrint "OAS: 还原 config 用户数据…"
+    DetailPrint "YYJio: 还原 config 用户数据…"
     CreateDirectory "$INSTDIR\resources\engine\config"
-    CopyFiles /SILENT "$PLUGINSDIR\oas-keep\*" "$INSTDIR\resources\engine\config"
+    CopyFiles /SILENT "$PLUGINSDIR\oas-keep\*.json" "$INSTDIR\resources\engine\config"
+    CopyFiles /SILENT "$PLUGINSDIR\oas-keep\deploy.yaml" "$INSTDIR\resources\engine\config"
+    CreateDirectory "$INSTDIR\resources\engine\config\gui_avatars"
+    CopyFiles /SILENT "$PLUGINSDIR\oas-keep\gui_avatars\*.*" "$INSTDIR\resources\engine\config\gui_avatars"
   ${endIf}
 !macroend

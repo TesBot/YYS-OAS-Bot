@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YYJio 痒痒鸡 · 阴阳师自动化控制台</title>
+<meta name="description" content="YYJio（痒痒鸡）是阴阳师的多账号自动化控制台：模拟器多开、任务编排、自定义 OCR 点击与滚动找图点击、自定义组队，附可视化执行日志。Windows 桌面应用，引擎与界面解耦。" />
+<meta property="og:title" content="YYJio 痒痒鸡 · 阴阳师自动化控制台" />
+<meta property="og:description" content="多账号多开、任务编排、自定义点击（OCR / 滚动找图）、自定义组队。可视化控制台，日志实时可见。" />
+<meta property="og:image" content="assets/img/overview.png" />
+<link rel="icon" href="assets/img/icon.png" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <img src="assets/img/icon.png" alt="YYJio" />
+      <span>YYJio<small>痒痒鸡 · 阴阳师自动化控制台</small></span>
+    </a>
+    <nav>
+      <a href="#features">功能</a>
+      <a href="#ui">界面</a>
+      <a href="#guide">使用说明</a>
+      <a href="#custom">自定义功能</a>
+      <a href="#faq">常见问题</a>
+      <a href="#download">下载</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">v1.0.0 · Windows 10 / 11</span>
+        <h1>把阴阳师的日常，<br /><em>交给一台模拟器</em>去做。</h1>
+        <p class="lede">
+          YYJio（痒痒鸡）是一个桌面端控制台：绑定模拟器后，用可视化的「编排表」把探索、御魂、活动、组队排成一条流水线，
+          再用「自定义点击」把你自己的玩法接进来 —— 看文字点、滚动找图点，都行。
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#download">下载 YYJio</a>
+          <a class="btn btn-ghost" href="#guide">先看怎么用</a>
+        </div>
+        <div class="meta">
+          <span><i class="dot"></i>免配置运行时，装完即用</span>
+          <span><i class="dot"></i>多开：一个账号一台模拟器</span>
+          <span><i class="dot"></i>开源 GPL-3.0</span>
+        </div>
+      </div>
+      <figure class="shot hero-shot">
+        <img src="assets/img/overview.png" alt="YYJio 总览页：两个账号卡片" loading="lazy" />
+        <figcaption>总览：每张卡片是一个账号，连接状态、模拟器地址、正在跑的任务一眼可见。</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <!-- 功能 -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">FEATURES</span>
+        <h2>该有的都有，不该有的都砍了</h2>
+        <p>只做三件事：把账号管好、把任务排好、把你自己想点的东西点出来。</p>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
+          <h3>多开与账号绑定</h3>
+          <p>一个账号一台模拟器，绑定即用。绑定后自动从游戏画面读出昵称、截下圆形头像，不用手填。</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="18" cy="18" r="2"/></svg></div>
+          <h3>任务编排</h3>
+          <p>探索、御魂、觉醒、活动……拖成一条流水线，支持循环次数、随机发呆、多账号联动。</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 15l4-4 3 3 5-6 4 4"/><rect x="3" y="3" width="18" height="18" rx="3"/></svg></div>
+          <h3>自定义点击（OCR）</h3>
+          <p>抓当前画面，框出要点的位置，写上要识别的文字。看得到文字才点，看不到就等你下次。</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="3" width="10" height="18" rx="5"/><path d="M12 7v4"/></svg></div>
+          <h3>滚动寻找并点击</h3>
+          <p>给一张目标图，程序一边滚动一边匹配，命中就点它。列表翻页、活动滚动页都能用。</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.4"/><path d="M3 20c0-3 2.7-5 6-5s6 2 6 5"/></svg></div>
+          <h3>自定义组队</h3>
+          <p>指定队长与队员，后面的御魂、觉醒、探索自动沿用这支队伍，队长建房、队员接受邀请。</p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></div>
+          <h3>执行记录与实时日志</h3>
+          <p>每个任务一行开始 / 结束 / 耗时，日志坞里是引擎原话，出问题能直接看到卡在哪一步。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 界面 -->
+  <section id="ui">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">INTERFACE</span>
+        <h2>编排表：左边是谁，右边做什么</h2>
+        <p>一份编排表就是一个账号（或一组账号）的完整流程。改顺序、改参数、单独重跑某一步，都在这一页。</p>
+      </div>
+      <figure class="shot">
+        <img src="assets/img/flows.png" alt="任务编排页：左侧账号与编排列表，右侧步骤详情" loading="lazy" />
+        <figcaption>「每日日常」编排：自定义组队 → 探索副本 → 御魂（组队联动）→ 自定义点击，循环 3 轮。</figcaption>
+      </figure>
+      <div class="cards" style="margin-top:18px">
+        <div class="card"><h3>账号分组在左</h3><p>账号下面挂着它的编排表，点一下就切换，多开不用来回找。</p></div>
+        <div class="card"><h3>步骤可上移下移</h3><p>每行都能改参数、临时禁用、删除；「执行」默认按当前顺序从头跑。</p></div>
+        <div class="card"><h3>进度与状态在卡片上</h3><p>正在跑的任务会显示在账号卡片第二行，日志坞会随任务自动展开。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 使用说明 -->
+  <section id="guide">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">GETTING STARTED</span>
+        <h2>从装好到跑起来，五步</h2>
+        <p>准备：Windows 10 / 11、一个模拟器（MuMu 12 已验证），游戏分辨率固定 <b>1280×720</b>。</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div>
+            <h3>安装并启动</h3>
+            <p>运行安装包，装到非系统盘也可以。首次启动会自动准备 Python 运行时，之后不再联网下载。</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <h3>打开模拟器，确认 adb 能连上</h3>
+            <p>先启动模拟器并进入游戏，回到控制台点「刷新设备」。看到设备出现在「未绑定的模拟器」里就说明 adb 通了。</p>
+            <ul>
+              <li>MuMu 12 单开默认 <span style="font-family:var(--mono)">127.0.0.1:16384</span>，多开依次 +32。</li>
+              <li>没有自动扫到，可以在「绑定新账号」里直接填地址再点「连接」。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <h3>绑定账号</h3>
+            <p>点设备那行的「绑定为账号」，或右上角「绑定新账号」。实例名只是配置文件名（如 <span style="font-family:var(--mono)">oas1</span>），昵称和头像会自动从游戏画面左上角识别，识别不到也能手填。</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <h3>建编排表、加任务</h3>
+            <p>进「任务编排」→「新建编排」→「添加任务」，按类别挑玩法。想组队就先加一条「自定义组队」，再给玩法打开「组队执行」。</p>
+          </div>
+        </div>
+        <div class="step">
+          <div>
+            <h3>执行，盯日志</h3>
+            <p>点「执行」开跑，底部日志坞显示引擎实时输出；跑完在「执行记录」里看每个任务的耗时与结果。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 自定义功能 -->
+  <section id="custom">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">CUSTOM</span>
+        <h2>自定义功能：把「你想点的」变成任务</h2>
+        <p>引擎自带的是固定玩法。活动页、领取弹窗、列表翻页这种「只有你知道在哪」的东西，用自定义点击和自定义组队补上。</p>
+      </div>
+
+      <!-- 自定义点击 -->
+      <div class="split">
+        <div>
+          <span class="kicker">CUSTOM CLICK</span>
+          <h3>自定义点击</h3>
+          <p>
+            一份方案由若干「层」组成，从第 1 层开始按顺序执行：每层先判定，命中后按框选区域点一下，再等一段时间进下一层。
+            每层可以选择两种动作类型：
+          </p>
+          <div class="types">
+            <span class="pill on">直接识别并点击（看文字）</span>
+            <span class="pill on">滚动寻找并点击（找图片）</span>
+          </div>
+          <p style="margin-top:14px">
+            <b>直接识别并点击</b>：抓一张画面，框出要点的区域，写上判定文字（可多行）。OCR 识别到文字才点，
+            适合「有‘领取’才点」「有‘挑战’才进」这种页面。
+          </p>
+          <p>
+            <b>滚动寻找并点击</b>：先框一个「鼠标停留区域」，再框出要找的目标图案。执行时程序在停留区里随机落点、
+            向下或向上滚动，每滚一次就截一帧匹配目标图，命中就点目标图的中心。适合长列表、需要下滑才能看到的目标。
+          </p>
+          <table class="params">
+            <tr><th>参数</th><th>说明</th></tr>
+            <tr><td>动作类型</td><td>直接识别并点击 / 滚动寻找并点击，同一份方案里可以混用。</td></tr>
+            <tr><td>判定文字</td><td>每行一条，全部命中或命中任意可选；找不到就等下一轮。</td></tr>
+            <tr><td>点击区域</td><td>在图上拖一个框，点击会落在框内随机位置，不是死点。</td></tr>
+            <tr><td>置信度</td><td>OCR 得分门槛，文字糊、字体花时往下调。</td></tr>
+            <tr><td>滚动方式</td><td>自动（能用滚轮就用滚轮，否则改成手指拖动）/ 鼠标滚轮 / 手指拖动。</td></tr>
+            <tr><td>滚动方向 / 格数 / 间隔</td><td>向下或向上，每次滚几格，两次滚动之间停多久。</td></tr>
+            <tr><td>目标匹配度</td><td>模板匹配门槛，0.8 表示八成相似才点。</td></tr>
+            <tr><td>寻找超时</td><td>滚了这么久还没找到就放弃这一层，避免一直滚。</td></tr>
+            <tr><td>本层重复 / 循环间隔</td><td>仅一次、重复 N 次、一直循环，适合连点与翻页。</td></tr>
+            <tr><td>执行后跳转</td><td>点完跳到指定层，做简单的循环流程。</td></tr>
+          </table>
+        </div>
+        <div>
+          <figure class="shot">
+            <img src="assets/img/plan-direct.png" alt="自定义点击编辑器：直接识别并点击" loading="lazy" />
+            <figcaption>直接识别并点击：抓图 → 框选区域 → 写判定文字。</figcaption>
+          </figure>
+          <figure class="shot" style="margin-top:16px">
+            <img src="assets/img/plan-scroll.png" alt="自定义点击编辑器：滚动寻找并点击" loading="lazy" />
+            <figcaption>滚动寻找并点击：目标图案 + 滚动方式 / 方向 / 格数 / 匹配度 / 超时。</figcaption>
+          </figure>
+        </div>
+      </div>
+
+      <div class="note">
+        <strong>小提示：</strong>目标图案尽量框「形状稳定、颜色有辨识度」的一小块（图标、按钮、花纹），别框整块背景 ——
+        背景会随页面滚动变化，匹配度会掉。找不到时先把「目标匹配度」降到 0.7 左右再试。
+      </div>
+
+      <!-- 自定义组队 -->
+      <div class="split rev" style="margin-top:56px">
+        <div>
+          <figure class="shot">
+            <img src="assets/img/taskpicker.png" alt="添加任务：自定义组队与自定义点击入口" loading="lazy" />
+            <figcaption>添加任务：自定义组队与自定义点击排在最上面，下面才是引擎玩法清单。</figcaption>
+          </figure>
+        </div>
+        <div>
+          <span class="kicker">CUSTOM TEAM</span>
+          <h3>自定义组队</h3>
+          <p>
+            多开才用得上：先在编排里加一条「自定义组队」，指定谁是队长、谁是队员；后面的玩法（御魂、觉醒、探索、日轮之陨……）
+            把模式切到「组队执行」，就会自动沿用这支队伍 —— 队长负责建房和邀请，队员负责接受邀请。
+          </p>
+          <div class="steps" style="margin-top:18px">
+            <div class="step">
+              <div>
+                <h3>加一条「自定义组队」</h3>
+                <p>在「添加任务」抽屉顶部，选队长账号，再勾队员，可以不是第一个账号。</p>
+              </div>
+            </div>
+            <div class="step">
+              <div>
+                <h3>给玩法开「组队执行」</h3>
+                <p>只有带「可联动」标记的玩法支持组队，切换后步骤卡片会显示队长与队员。</p>
+              </div>
+            </div>
+            <div class="step">
+              <div>
+                <h3>确认昵称与好友关系</h3>
+                <p>两个账号需要互为好友或同寮，队员在线并停在庭院，队长会按昵称在好友列表里找人。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 注意 -->
+  <section id="caveats">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">BEFORE YOU START</span>
+        <h2>跑之前先确认这几件事</h2>
+        <p>大部分「卡住不动」「点不中」，都是下面几条没配好。</p>
+      </div>
+      <div class="cards">
+        <div class="card"><h3>分辨率 1280×720</h3><p>模拟器分辨率必须是 1280×720，否则框选坐标全错位，任务也跑不起来。</p></div>
+        <div class="card"><h3>默认主题装扮</h3><p>庭院皮肤换回初始庭院，关闭自定义战斗主题、幕间主题恢复默认 —— 否则会反复卡同一界面或抓不到结算。</p></div>
+        <div class="card"><h3>控制方式</h3><p>默认 minitouch 点击最稳。滚动找图在 adb / minitouch 下会走「手指拖动」，用滚轮需要能拿到模拟器窗口。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">FAQ</span>
+        <h2>常见问题</h2>
+      </div>
+      <details><summary>需要自己装 Python 或 Git 吗？</summary><p>不需要。安装包自带引擎，首次启动会自动准备运行时（约 30 MB，仅第一次）。</p></details>
+      <details><summary>安装包为什么不能放在某些目录里双击？</summary><p>请把安装包放在桌面、下载目录或 U 盘这类普通位置再运行；放在受限目录（例如被安全软件监控的工程目录）里可能报「Error writing temporary file」。</p></details>
+      <details><summary>绑定账号后昵称是错的 / 没有头像？</summary><p>识别取的是游戏画面左上角的角色信息，游戏要在主界面（庭院）并加载完成。识别失败不影响绑定，可以点「编辑资料」手填昵称，或再点「从当前画面重新识别」。</p></details>
+      <details><summary>滚动找图一直找不到怎么办？</summary><p>先把「目标匹配度」降到 0.7，确认目标图案在滚动方向上确实会出现；再看「滚动方式」是不是「手指拖动」但游戏页面需要滑动而不是拖拽。</p></details>
+      <details><summary>怎么检查新版本？</summary><p>左下角版本号旁边的「检查更新」会查询 GitHub Releases；发现新版本会提示并可以直接打开下载页。</p></details>
+      <details><summary>数据存在哪？卸载会丢吗？</summary><p>账号实例、自定义方案、编排表、头像都保存在安装目录的 <span style="font-family:var(--mono)">resources/engine/config</span> 下，卸载时会被备份出来；换版本安装也会尽量迁移。</p></details>
+    </div>
+  </section>
+
+  <!-- 下载 -->
+  <section id="download">
+    <div class="wrap">
+      <div class="download">
+        <div>
+          <h2>下载 YYJio</h2>
+          <p>Windows 10 / 11 安装包，约 110 MB。装完打开就能用，引擎与运行时随包携带。</p>
+          <div class="ver">最新版本 v1.0.0 · GPL-3.0</div>
+        </div>
+        <div>
+          <a class="btn btn-primary" href="https://github.com/TesBot/YYS-OAS-Bot/releases/latest">去 GitHub 下载</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>YYJio（痒痒鸡）· 阴阳师自动化控制台</span>
+    <span>引擎基于 <a href="https://github.com/runhey/OAS">OAS / OnmyojiAutoScript</a> · GPL-3.0 · <a href="https://github.com/TesBot/YYS-OAS-Bot">源码</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

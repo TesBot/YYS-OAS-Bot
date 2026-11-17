@@ -3,21 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OAS Studio · 阴阳师自动化控制台</title>
+<title>YYJio · 痒痒鸡 · 阴阳师自动化控制台</title>
+<link rel="icon" href="/static/icon.png" />
 <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
   <div class="titlebar" id="titlebar">
-    <span class="tb-title">OAS Studio</span>
-    <span class="tb-sub">阴阳师自动化控制台</span>
+    <span class="tb-title">YYJio</span>
+    <span class="tb-sub">痒痒鸡 · 阴阳师自动化控制台</span>
   </div>
 
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">OAS</div>
+        <img class="brand-icon" src="/static/icon.png" alt="YYJio" />
         <div class="brand-text">
-          <strong>Studio</strong>
+          <strong>YYJio<span class="brand-cn">痒痒鸡</span></strong>
           <span>阴阳师自动化</span>
         </div>
       </div>
@@ -28,7 +29,10 @@
         <div class="bridge-state" id="bridgeState">
           <span class="dot dot-idle"></span><span>连接中…</span>
         </div>
-        <div class="side-version" id="appVersion">版本检测中…</div>
+        <div class="side-version-row">
+          <div class="side-version" id="appVersion">版本检测中…</div>
+          <button class="link-btn update-btn" data-act="checkUpdate">检查更新</button>
+        </div>
         <div class="side-links">
           <button class="link-btn" data-act="reload">刷新数据</button>
           <span class="sep">·</span>

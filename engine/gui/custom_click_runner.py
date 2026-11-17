@@ -33,7 +33,8 @@ FULL_ROI = (0, 0, 1280, 720)  # 引擎强制 1280x720，见 screenshot.py:206
 
 
 def log(msg: str) -> None:
-    text = f"[自定义点击] {msg}"
+    # 带上时间戳：日志坞里引擎自己的行有时间，自研行以前没有，混在一起对不齐
+    text = f"{time.strftime('%H:%M:%S')} | [自定义点击] {msg}"
     try:
         print(text, flush=True)
     except UnicodeEncodeError:  # 控制台不是 UTF-8 时（GBK 终端）退回可编码字符，别让日志打断任务

@@ -1,4 +1,4 @@
-// OAS Studio · 控制台主进程（引擎解耦版）
+// YYJio（痒痒鸡）· 控制台主进程（引擎解耦版）
 //
 // 职责：
 //   1. 首次运行向导：用户选择「引擎目录」（引擎独立分发、解压安装），校验后持久化。
@@ -30,7 +30,7 @@ let adoptedBridgePid = 0; // 复用到的既有桥接（上次崩溃留下的孤
 // 单实例锁：用户重复双击时聚焦已有窗口，而不是起第二个看不见的实例
 // （第二个实例会让「关闭程序 → 重装」一直提示程序正在运行）。
 // 拿不到锁必须「立刻」结束本进程：app.quit() 是异步的，后面还会继续执行到
-// whenReady，极端情况下会留下一个没有窗口的 OAS Studio.exe —— 安装器正是按
+// whenReady，极端情况下会留下一个没有窗口的 YYJio.exe —— 安装器正是按
 // 可执行文件路径判断「程序正在运行」的，于是重装永远提示关不掉。
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) {
@@ -74,21 +74,30 @@ function legacyRuntimeDir() {
 
 // 运行时目录：放在用户本地数据目录，升级/重装主程序都不会被删除，
 // 只有首次安装才需要下载解压一次。
-//   打包：%LOCALAPPDATA%\OAS Studio\runtime\python
+//   打包：%LOCALAPPDATA%\YYJio\runtime\python
 //   开发：<仓库>\runtime\python
 function runtimeDir() {
   if (!app.isPackaged) return path.join(__dirname, '..', 'runtime', 'python');
   const base = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local');
-  return path.join(base, 'OAS Studio', 'runtime', 'python');
+  return path.join(base, 'YYJio', 'runtime', 'python');
 }
 
 // 老版本把运行时解压到安装目录里，升级时搬一次，避免让用户重新下载 220MB。
+// 另外：改名前的版本把运行时放在 %LOCALAPPDATA%\OAS Studio 下，也一并接过来。
+function legacyRuntimeDirs() {
+  const dirs = [legacyRuntimeDir()];
+  const base = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local');
+  dirs.push(path.join(base, 'OAS Studio', 'runtime', 'python'));
+  return dirs;
+}
+
 function migrateLegacyRuntime() {
   try {
     const target = runtimeDir();
     if (fs.existsSync(path.join(target, 'python.exe'))) return false;
-    const legacy = legacyRuntimeDir();
-    if (legacy === target || !fs.existsSync(path.join(legacy, 'python.exe'))) return false;
+    const legacy = legacyRuntimeDirs().find(
+      (dir) => dir !== target && fs.existsSync(path.join(dir, 'python.exe')));
+    if (!legacy) return false;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     try {
       fs.renameSync(legacy, target); // 同盘瞬间完成
@@ -96,6 +105,57 @@ function migrateLegacyRuntime() {
       fs.cpSync(legacy, target, { recursive: true });
       fs.rmSync(legacy, { recursive: true, force: true });
     }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 改名前的版本（OAS Studio）把账号配置放在自己的安装目录里，换名安装后
+// 引擎会以为「还没有任何账号」。首启动时把旧目录里的账号配置 / 编排表 /
+// 方案库 / 头像整体复制过来，用户不用重新绑定。
+const LEGACY_CONFIG_MARKERS = ['gui_flows.json', 'gui_custom_clicks.json', 'gui_profiles.json'];
+
+function legacyEngineConfigDirs() {
+  const dirs = [];
+  const local = process.env.LOCALAPPDATA || '';
+  if (local) dirs.push(path.join(local, 'Programs', 'OAS Studio', 'resources', 'engine', 'config'));
+  try {
+    const out = spawnSync('reg.exe', ['query',
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      '/s', '/f', 'OAS Studio', '/d'], { encoding: 'utf8', windowsHide: true });
+    const text = (out && out.stdout) || '';
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*InstallLocation\s+REG_\w+\s+(.+?)\s*$/i);
+      if (m && m[1]) dirs.push(path.join(m[1], 'resources', 'engine', 'config'));
+    }
+  } catch { /* 注册表读不到就只试默认路径 */ }
+  return dirs;
+}
+
+function migrateLegacyEngineConfig(engineDir) {
+  try {
+    if (!engineDir) return false;
+    const target = path.join(engineDir, 'config');
+    if (!fs.existsSync(target)) return false;
+    const hasMarker = LEGACY_CONFIG_MARKERS.some((name) => fs.existsSync(path.join(target, name)));
+    if (hasMarker) return false; // 已经有自己的数据，不覆盖
+    const legacy = legacyEngineConfigDirs().find((dir) => {
+      if (!fs.existsSync(dir)) return false;
+      if (path.resolve(dir).toLowerCase() === path.resolve(target).toLowerCase()) return false;
+      return LEGACY_CONFIG_MARKERS.some((name) => fs.existsSync(path.join(dir, name)));
+    });
+    if (!legacy) return false;
+    for (const name of fs.readdirSync(legacy)) {
+      if (name === 'template.json' || name === 'deploy.yaml') continue;
+      const from = path.join(legacy, name);
+      const to = path.join(target, name);
+      if (fs.existsSync(to)) continue;
+      try {
+        fs.cpSync(from, to, { recursive: true });
+      } catch { /* 单个文件失败不影响其它 */ }
+    }
+    console.log(`[config] 已从旧版目录迁移账号配置：${legacy}`);
     return true;
   } catch {
     return false;
@@ -216,7 +276,7 @@ function startBridge(engineDir) {
   }
   if (!fs.existsSync(bridge)) {
     dialog.showErrorBox('引擎目录不完整',
-      `未找到：${bridge}\n内置引擎应在：${bundledEngineDir() || '(未打包)'}\n请重新安装 OAS Studio。`);
+      `未找到：${bridge}\n内置引擎应在：${bundledEngineDir() || '(未打包)'}\n请重新安装 YYJio。`);
     return false;
   }
   bridgeProc = spawn(python, ['-X', 'utf8', '-B', bridge, '--port', String(BRIDGE_PORT)], {
@@ -332,6 +392,8 @@ function registerAppProtocol() {
 // ────────────────────────── 窗口 ──────────────────────────
 
 const PRELOAD = path.join(__dirname, 'preload.js');
+// 任务栏 / 窗口左上角图标（安装包内的 exe 图标由 electron-builder 写入）
+const APP_ICON = path.join(RENDERER_DIR, 'icon.png');
 const WINDOW_OPTS = {
   width: 1280,
   height: 820,
@@ -339,6 +401,7 @@ const WINDOW_OPTS = {
   minHeight: 700,
   backgroundColor: '#f7f5f1',
   show: false,
+  icon: APP_ICON,
   titleBarStyle: 'hidden',
   titleBarOverlay: { color: '#ffffff', symbolColor: '#57514a', height: 40 },
   webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -388,6 +451,7 @@ function openWizard() {
     maximizable: false,
     backgroundColor: '#f7f5f1',
     show: false,
+    icon: APP_ICON,
     autoHideMenuBar: true,
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -402,7 +466,7 @@ function openWizard() {
 function downloadToFile(url, dest, onProgress, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 8) return reject(new Error('重定向次数过多'));
-    const req = https.get(url, { headers: { 'User-Agent': 'OAS-Studio' } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'YYJio' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         return resolve(downloadToFile(res.headers.location, dest, onProgress, redirects + 1));
@@ -569,7 +633,6 @@ protocol.registerSchemesAsPrivileged([
 
 app.whenReady().then(async () => {
   if (!singleInstance) return; // 已有实例在跑，本进程立刻退出
-  resetSession(); // 每次启动都是干净会话：账号需重新绑定，任务模板保留
   registerAppProtocol();
   buildMenu();
 
@@ -578,6 +641,8 @@ app.whenReady().then(async () => {
 
   // 生效引擎：用户覆盖 > 内置引擎（安装包自带，无需任何配置）
   const engineDir = activeEngineDir();
+  // 从旧版（OAS Studio）安装目录接回账号配置，改名后用户不用重新绑定
+  migrateLegacyEngineConfig(engineDir);
   const checks = engineDir ? validateEngine(engineDir) : null;
   const ready = checks && checks.bridge && checks.python;
 
@@ -585,7 +650,7 @@ app.whenReady().then(async () => {
     const ok = await ensureBridge();
     if (!ok) {
       dialog.showErrorBox('桥接服务启动失败',
-        `无法从引擎目录启动 gui/bridge.py。\n引擎目录：${engineDir}\n若反复失败，请重新安装 OAS Studio。`);
+        `无法从引擎目录启动 gui/bridge.py。\n引擎目录：${engineDir}\n若反复失败，请重新安装 YYJio。`);
     }
     createWindow();
   } else {
@@ -650,7 +715,7 @@ if (singleInstance) {
 // 退出：先回收桥接，再让 Electron 正常退出。
 //
 // 但「正常退出」经常不够干净：Electron 的 GPU / 渲染 / Utility 进程也全是
-// OAS Studio.exe，主进程退出时它们可能卡在 D3D 收尾上十几秒；安装器是按
+// YYJio.exe，主进程退出时它们可能卡在 D3D 收尾上十几秒；安装器是按
 // 「exe 路径以安装目录开头」判断程序是否在运行的，于是重装就弹「无法关闭」。
 // 所以这里用**和安装器完全相同的判据**做一次清扫：凡是 exe 路径位于安装目录
 // 之下、又不是自己的进程，全部结束掉。两边判据一致，安装器就不会再看到残留。
@@ -674,33 +739,14 @@ function sweepInstallDir() {
   } catch { /* 尽力而为 */ }
 }
 
-// 干净会话：账号绑定与每个号的任务设置归零，但编排表 / 自定义方案库 /
-// 账号资料（含组队用的游戏昵称）长期保留 —— 任务是通用模板，不跟某个号走。
-// 启动时和退出时各执行一次，异常退出后下次启动依然是干净的。
-function resetSession() {
-  try {
-    const dir = activeEngineDir();
-    if (!dir) return;
-    const cfgDir = path.join(dir, 'config');
-    if (!fs.existsSync(cfgDir)) return;
-    const isInstance = (f) => f.endsWith('.json')
-      && f !== 'template.json' && !f.startsWith('gui_')
-      && !f.endsWith('.json.bak') && !f.endsWith('.json.tmp');
-    for (const f of fs.readdirSync(cfgDir)) {
-      if (!isInstance(f)) continue;
-      const base = f.slice(0, -5);
-      for (const suffix of ['.json', '.json.bak', '.json.tmp']) {
-        try { fs.unlinkSync(path.join(cfgDir, base + suffix)); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
-}
+// 注意：以前这里有一个 resetSession()，启动和退出时会把 config/*.json（也就是
+// 每个账号的实例配置、绑定关系、头像）全部删掉，导致每次重启都要重新绑定账号。
+// 现在账号绑定是长期数据，不再自动清空；需要重置请手动删除 config 下的实例文件。
 
 let quitting = false;
 function beginQuit() {
   if (quitting) return;
   quitting = true;
-  resetSession();
   stopBridge();
   const sweep = setTimeout(sweepInstallDir, 1200);
   const hard = setTimeout(() => {
