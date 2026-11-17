@@ -134,7 +134,11 @@
         <div class="step">
           <div>
             <h3>安装并启动</h3>
-            <p>运行安装包，装到非系统盘也可以。首次启动会自动准备 Python 运行时，之后不再联网下载。</p>
+            <p>运行安装包，装到非系统盘也可以。首次启动会自动下载并安装 <b>Python 运行时</b>（约 220 MB，仅这一次），之后完全离线可用。</p>
+            <ul>
+              <li>运行时里带好了引擎需要的全部依赖（Python 3.10 + OpenCV / numpy / requests 等），不用另装 Python。</li>
+              <li>下载慢或没网，可以手动下载运行时包，在向导里选「本地 zip」安装。</li>
+            </ul>
           </div>
         </div>
         <div class="step">
@@ -293,7 +297,7 @@
         <span class="tag">FAQ</span>
         <h2>常见问题</h2>
       </div>
-      <details><summary>需要自己装 Python 或 Git 吗？</summary><p>不需要。安装包自带引擎，首次启动会自动准备运行时（约 30 MB，仅第一次）。</p></details>
+      <details><summary>需要自己装 Python 或 Git 吗？</summary><p>不需要。安装包自带引擎，首次启动会自动下载 Python 运行时（约 220 MB，Python 3.10 + 引擎全部依赖，仅第一次）。<br />没有网络或下载失败时，可以手动下载 <a href="https://github.com/TesBot/YYS-OAS-Bot/releases/download/runtime-v1.0.1/oas-python-runtime-1.0.1.zip">oas-python-runtime-1.0.1.zip</a>，启动向导里选「本地 zip」安装即可；运行时装好后就不再需要联网。</p></details>
       <details><summary>安装包为什么不能放在某些目录里双击？</summary><p>请把安装包放在桌面、下载目录或 U 盘这类普通位置再运行；放在受限目录（例如被安全软件监控的工程目录）里可能报「Error writing temporary file」。</p></details>
       <details><summary>绑定账号后昵称是错的 / 没有头像？</summary><p>识别取的是游戏画面左上角的角色信息，游戏要在主界面（庭院）并加载完成。识别失败不影响绑定，可以点「编辑资料」手填昵称，或再点「从当前画面重新识别」。</p></details>
       <details><summary>滚动找图一直找不到怎么办？</summary><p>先把「目标匹配度」降到 0.7，确认目标图案在滚动方向上确实会出现；再看「滚动方式」是不是「手指拖动」但游戏页面需要滑动而不是拖拽。</p></details>
@@ -308,11 +312,13 @@
       <div class="download">
         <div>
           <h2>下载 YYJio</h2>
-          <p>Windows 10 / 11 安装包，约 110 MB。装完打开就能用，引擎与运行时随包携带。</p>
+          <p>Windows 10 / 11 安装包，约 110 MB。引擎随包携带，首次启动自动补 Python 运行时，之后离线可用。</p>
           <div class="ver">最新版本 v1.0.0 · GPL-3.0</div>
+          <div class="ver">Python 运行时 1.0.1 · 约 220 MB · 仅离线安装时需要</div>
         </div>
-        <div>
+        <div class="dl-actions">
           <a class="btn btn-primary" href="https://github.com/TesBot/YYS-OAS-Bot/releases/latest">去 GitHub 下载</a>
+          <a class="btn btn-ghost btn-sm" href="https://github.com/TesBot/YYS-OAS-Bot/releases/download/runtime-v1.0.1/oas-python-runtime-1.0.1.zip">只下运行时包</a>
         </div>
       </div>
     </div>
