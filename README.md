@@ -30,6 +30,9 @@
 2. 首次启动按向导准备 Python 运行时（或手动选择本地 zip / 换镜像地址）。
 3. 启动模拟器（分辨率必须是 **1280×720**）→ 打开游戏 → 在控制台「刷新设备」→「绑定新账号」。
 
+运行时包也可以手动下载离线安装（向导里可选本地 zip）：
+[oas-python-runtime-1.0.1.zip](https://github.com/TesBot/YYS-OAS-Bot/releases/download/runtime-v1.0.1/oas-python-runtime-1.0.1.zip)（约 220 MB，Python 3.10.11 + cv2 / numpy / requests 等全部依赖，版本 1.0.1 长期不变）。
+
 ## 构建
 
 ```bash
