@@ -1,6 +1,9 @@
 # YYJio（痒痒鸡）
 
-阴阳师自动化控制台：多账号管理、任务编排、可视化执行日志。引擎基于 [runhey/OAS](https://github.com/runhey/onmyoji_auto_script)（GPL-3.0），界面与引擎解耦。
+阴阳师自动化控制台：多账号管理、任务编排、可视化执行日志。
+![Uploading image.png…]()
+
+引擎基于 [runhey/OAS](https://github.com/runhey/onmyoji_auto_script)（GPL-3.0），界面与引擎解耦。
 
 **官网（功能演示 + 使用说明）：<https://tesbot.github.io/YYS-OAS-Bot/>**
 **下载：<https://github.com/TesBot/YYS-OAS-Bot/releases/latest>**
