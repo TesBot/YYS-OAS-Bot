@@ -192,6 +192,14 @@ section + section { border-top: 1px solid rgba(231, 221, 205, .9); }
 .params td:first-child { white-space: nowrap; font-weight: 600; color: var(--ink); }
 .params tr:last-child td { border-bottom: 0; }
 
+code {
+  font-family: var(--mono);
+  font-size: 92%;
+  background: rgba(120, 96, 60, .09);
+  padding: 1.5px 5px;
+  border-radius: 4px;
+}
+
 .note {
   margin-top: 16px;
   padding: 13px 15px;

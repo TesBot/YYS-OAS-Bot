@@ -15,6 +15,7 @@ import argparse
 import atexit
 import base64
 import copy
+import hashlib
 import json
 import os
 import queue
@@ -46,6 +47,9 @@ PROFILE_FILE = CONFIG_DIR / "gui_profiles.json"
 # 账号头像：绑定账号时从游戏画面里裁下来的圆形头像，按实例名存一份
 AVATAR_DIR = CONFIG_DIR / "gui_avatars"
 CUSTOM_CLICK_FILE = CONFIG_DIR / "gui_custom_clicks.json"
+# 任务包在线源：GitHub Pages 上的 index.json（内容由 TesBot/YYJio-Tasks 仓库生成）
+TASK_SOURCE_URL = "https://tesbot.github.io/YYJio-Tasks/index.json"
+TASK_PACKAGE_CATEGORY = "自定义任务"
 SCHEMA_CACHE = Path(__file__).resolve().parent / ".cache" / "schema.json"
 # 便携整包布局：bridge 由打包内嵌的 Python 直接运行，子进程一律用当前解释器；
 # 开发布局：bridge 运行于 .venv，sys.executable 同样指向 venv 的 python.exe。
@@ -62,10 +66,11 @@ ADB = next((p for p in ADB_CANDIDATES if p.exists()), ADB_CANDIDATES[-1])
 
 sys.path.insert(0, str(ROOT))
 from gui import catalog  # noqa: E402
+from gui import taskpack  # noqa: E402
 
 # ── 品牌与版本 ──
 APP_NAME = "YYJio"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_BUILD = "yyjio"
 GITHUB_REPO = "TesBot/YYS-OAS-Bot"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -328,17 +333,22 @@ def _team_status_path(cfg: dict, task: str) -> str | None:
 def get_catalog():
     def _entry(k: str, name: str, cat: str, desc: str, team: bool):
         cat = catalog.CATEGORY_ALIAS.get(cat, cat)
-        return {"key": k, "name": name, "category": cat, "desc": desc,
-                "team": team, "hidden": cat in catalog.HIDDEN_CATEGORIES}
+        return {"key": k, "name": name, "category": cat, "desc": desc, "team": team,
+                "hidden": cat in catalog.HIDDEN_CATEGORIES or k in catalog.HIDDEN_TASKS}
 
+    package_tasks = _package_task_entries()
+    categories = [{"key": c, **catalog.CATEGORY_META.get(c, {})} for c in catalog.CATEGORY_ORDER]
+    # 这个分类一直在（就算还没装任何任务包）：用户要先能找到入口，
+    # 才能在里面点「在线刷新 / 从文件导入」。
+    categories.append({"key": TASK_PACKAGE_CATEGORY,
+                       "cat": "从任务包安装的自定义点击方案，可继续加到任意编排里。"})
     return {
         "tasks": [_entry(k, v[0], v[1], v[2], v[3]) for k, v in catalog.TASK_META.items()]
         + [dict(t, pseudo=True, hidden=False,
                 category=catalog.CATEGORY_ALIAS.get(t.get("category", ""), t.get("category", "")))
-           for t in catalog.PSEUDO_TASKS],
-        "categories": [
-            {"key": c, **catalog.CATEGORY_META.get(c, {})} for c in catalog.CATEGORY_ORDER
-        ],
+           for t in catalog.PSEUDO_TASKS]
+        + package_tasks,
+        "categories": categories,
         "issues": catalog.KNOWN_ISSUES,
         "field_hints": [{"match": m, "hint": h} for m, h in catalog.FIELD_HINTS],
         "summary_keys": catalog.SUMMARY_KEYS,
@@ -1075,9 +1085,33 @@ def unbind_all():
             except OSError:
                 pass
         removed.append(name)
-    # 编排表、自定义方案库与账号资料一律保留：任务是通用模板，不随账号清除
+        try:
+            _avatar_path(name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # 编排表与自定义方案库保留（任务是通用模板），但必须把这些账号从编排的绑定里摘掉：
+    # 否则重新绑定同名实例（实例名会从 oas1 开始复用）时，旧编排会被当成绑在新设备上。
+    if removed:
+        flows = _load_flows()
+        touched = False
+        for flow in flows:
+            accounts = flow.get("accounts") or []
+            kept = [a for a in accounts if a not in removed]
+            if len(kept) != len(accounts):
+                flow["accounts"] = kept
+                touched = True
+        if touched:
+            _save_flows(flows)
+        profiles = _load_profiles()
+        dropped = False
+        for one in removed:
+            if profiles.pop(one, None) is not None:
+                dropped = True
+        if dropped:
+            _save_profiles(profiles)
     return {"ok": True, "removed": removed,
-            "kept": ["gui_flows.json", "gui_flow_library.json", "gui_profiles.json"]}
+            "kept": ["gui_flows.json", "gui_flow_library.json"]}
 
 
 @app.post("/api/instances/{name}/test")
@@ -1418,17 +1452,21 @@ def save_flow_template(payload: dict = Body(...)):
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "方案名称不能为空")
+    src = next((f for f in _load_flows() if f.get("id") == payload.get("flow_id")), None)
     steps = payload.get("steps")
     if steps is None:
-        src = next((f for f in _load_flows() if f.get("id") == payload.get("flow_id")), None)
         if src is None:
             raise HTTPException(404, "编排表不存在")
         steps = src.get("steps")
     steps = _template_steps(steps)
     if not steps:
         raise HTTPException(400, "没有可保存的任务步骤")
+    # 循环设置与随机发呆也算方案的一部分：不存的话，建编排时这两项就丢了
+    loop = payload.get("loop") if payload.get("loop") is not None else (src or {}).get("loop")
+    idle = payload.get("idle") if payload.get("idle") is not None else (src or {}).get("idle")
     templates = [t for t in _load_flow_library() if t.get("name") != name]  # 同名覆盖
     tpl = {"id": f"t{uuid.uuid4().hex[:8]}", "name": name, "steps": steps,
+           "loop": _normalize_loop(loop), "idle": _normalize_idle(idle),
            "saved": datetime.now().isoformat(timespec="seconds")}
     templates.append(tpl)
     _save_flow_library(templates)
@@ -1595,6 +1633,27 @@ def _normalize_cc_step(raw, index: int) -> dict:
     }
 
 
+def _normalize_pkg_meta(raw) -> dict | None:
+    """方案里附带的「任务包」来源信息；不是从包安装的方案返回 None。"""
+    raw = raw if isinstance(raw, dict) else None
+    if not raw:
+        return None
+    out = {
+        "id": str(raw.get("id") or "")[:64],
+        "name": str(raw.get("name") or "")[:60],
+        "author": str(raw.get("author") or "")[:40],
+        "version": str(raw.get("version") or "")[:24],
+        "date": str(raw.get("date") or "")[:32],
+        "description": str(raw.get("description") or "")[:600],
+        "source": "online" if raw.get("source") == "online" else "file",
+        "sha256": str(raw.get("sha256") or "").lower()[:64],
+        "installed_at": str(raw.get("installed_at") or "")[:32],
+    }
+    if not out["id"] or not out["version"]:
+        return None
+    return out
+
+
 def _normalize_cc_plan(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     steps = [_normalize_cc_step(s, i) for i, s in enumerate(raw.get("steps") or [])]
@@ -1608,6 +1667,7 @@ def _normalize_cc_plan(raw) -> dict:
         "poll": _cc_range(raw.get("poll"), (0.3, 0.8)),
         "battle": raw.get("battle") is not False,  # 全局自动接管引擎战斗，可整份方案关闭
         "steps": steps,
+        "pkg": _normalize_pkg_meta(raw.get("pkg")),
         "updated": raw.get("updated") or datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -1698,6 +1758,227 @@ def delete_custom_click(plan_id: str):
         raise HTTPException(404, "方案不存在")
     _save_custom_plans(remain)
     return {"ok": True}
+
+
+# ────────────────────────── 任务包（.yyjio-task） ──────────────────────────
+
+def _package_plans() -> list[dict]:
+    return [p for p in _load_custom_plans() if p.get("pkg")]
+
+
+def _package_task_entries() -> list[dict]:
+    out = []
+    for plan in _package_plans():
+        pkg = plan["pkg"]
+        out.append({
+            "key": f"pkg:{pkg['id']}@{pkg['version']}",
+            "name": pkg.get("name") or plan["name"],
+            "category": TASK_PACKAGE_CATEGORY,
+            "desc": pkg.get("description") or "来自任务包的自定义点击方案",
+            "team": False,
+            "hidden": False,
+            "pseudo": True,
+            "plan_id": plan["id"],
+            "package": {"id": pkg["id"], "author": pkg.get("author") or "",
+                        "version": pkg["version"], "source": pkg.get("source") or "file"},
+        })
+    return out
+
+
+def _decode_upload(payload: dict) -> bytes:
+    data = payload.get("data")
+    if not isinstance(data, str) or not data:
+        raise HTTPException(400, "没有收到任务包内容")
+    if data.startswith("data:"):
+        data = data.split(",", 1)[-1]
+    try:
+        raw = base64.b64decode(data, validate=False)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "任务包内容不是有效的 base64")
+    return raw
+
+
+def _install_manifest(manifest: dict, source: str, overwrite: bool) -> dict:
+    pkg_id = manifest["id"]
+    version = manifest["version"]
+    plan_id = f"{pkg_id}@{version}"
+    plans = _load_custom_plans()
+    existing = next((p for p in plans if p["id"] == plan_id), None)
+    if existing is not None and not overwrite:
+        raise HTTPException(409, f"已安装同版本（{version}）；如需覆盖请勾选覆盖")
+    plan = _normalize_cc_plan({
+        **manifest["plan"],
+        "id": plan_id,
+        "name": manifest["name"],
+        "pkg": {
+            "id": pkg_id, "name": manifest["name"], "author": manifest.get("author") or "",
+            "version": version, "date": manifest.get("date") or "",
+            "description": manifest.get("description") or "",
+            "source": source, "sha256": manifest.get("sha256") or "",
+            "installed_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    })
+    if not plan["steps"]:
+        raise HTTPException(400, "任务包里没有可用的层级")
+    if existing is not None:
+        plans = [plan if p["id"] == plan_id else p for p in plans]
+    else:
+        plans.append(plan)
+    _save_custom_plans(plans)
+    return {"ok": True, "plan_id": plan_id, "plan": plan,
+            "package": taskpack.summary({**manifest, "steps": len(plan["steps"])})}
+
+
+@app.get("/api/task-packages")
+def list_task_packages():
+    items = []
+    for plan in _package_plans():
+        pkg = dict(plan["pkg"])
+        pkg.update({"plan_id": plan["id"], "plan_name": plan["name"],
+                    "steps": len(plan["steps"]), "updated": plan.get("updated") or ""})
+        items.append(pkg)
+    items.sort(key=lambda x: ((x.get("name") or ""), (x.get("version") or "")))
+    return {"packages": items, "category": TASK_PACKAGE_CATEGORY, "source": TASK_SOURCE_URL}
+
+
+@app.post("/api/task-packages/export")
+def export_task_package(payload: dict = Body(...)):
+    from datetime import date as _date
+    plan_id = (payload.get("plan_id") or "").strip()
+    plan = next((p for p in _load_custom_plans() if p["id"] == plan_id), None)
+    if plan is None:
+        raise HTTPException(404, "方案不存在")
+    pkg = plan.get("pkg") or {}
+    author = (payload.get("author") or pkg.get("author") or "").strip()
+    name = (payload.get("name") or pkg.get("name") or plan["name"]).strip()
+    pkg_id = (payload.get("id") or pkg.get("id") or taskpack.default_id(author, name)).strip().lower()
+    info = {
+        "id": pkg_id,
+        "name": name,
+        "author": author,
+        "version": (payload.get("version") or pkg.get("version") or "1.0.0").strip(),
+        "description": payload.get("description") if payload.get("description") is not None
+        else (pkg.get("description") or ""),
+        "date": payload.get("date") or _date.today().isoformat(),
+    }
+    try:
+        taskpack.validate_plan(plan)
+        data, entry = taskpack.build_package(plan, info)
+    except taskpack.PackError as exc:
+        raise HTTPException(400, f"这个方案还不能导出：{exc}")
+    return {"ok": True, "filename": entry["file"].split("/")[-1], "size": len(data),
+            "index_entry": entry, "info": info,
+            "data": base64.b64encode(data).decode("ascii")}
+
+
+@app.post("/api/task-packages/inspect")
+def inspect_task_package(payload: dict = Body(...)):
+    data = _decode_upload(payload)
+    try:
+        manifest = taskpack.read_package(data)
+    except taskpack.PackError as exc:
+        raise HTTPException(400, str(exc))
+    installed = next((p["pkg"].get("version") for p in _package_plans()
+                      if p["pkg"].get("id") == manifest["id"]), None)
+    steps = (manifest.get("plan") or {}).get("steps") or []
+    return {"ok": True, "package": taskpack.summary(manifest),
+            "installed_version": installed,
+            "same_version": installed == manifest["version"],
+            "layers": [{"index": i, "name": s.get("name") or f"第 {i} 层", "mode": s.get("mode")}
+                       for i, s in enumerate(steps, 1)]}
+
+
+@app.post("/api/task-packages/install")
+def install_task_package(payload: dict = Body(...)):
+    data = _decode_upload(payload)
+    try:
+        manifest = taskpack.read_package(data)
+    except taskpack.PackError as exc:
+        raise HTTPException(400, str(exc))
+    result = _install_manifest(manifest, "file", bool(payload.get("overwrite")))
+    result["installed_version"] = manifest["version"]
+    return result
+
+
+@app.delete("/api/task-packages/{pkg_id}")
+def delete_task_package(pkg_id: str, version: str | None = None):
+    plans = _load_custom_plans()
+    targets = [p for p in plans
+               if (p.get("pkg") or {}).get("id") == pkg_id
+               and (not version or p["pkg"]["version"] == version)]
+    if not targets:
+        raise HTTPException(404, "没有安装这个任务包")
+    ids = {p["id"] for p in targets}
+    used = [f.get("name") or f.get("id") for f in _load_flows()
+            if any(s.get("task") == catalog.CUSTOM_CLICK_KEY and s.get("plan_id") in ids
+                   for s in (f.get("steps") or []))]
+    if used:
+        raise HTTPException(409, f"任务包正被编排使用（{', '.join(used)}），请先删除对应步骤")
+    remain = [p for p in plans if p["id"] not in ids]
+    _save_custom_plans(remain)
+    return {"ok": True, "removed": len(targets)}
+
+
+def _fetch_task_source(url: str, timeout: int = 12) -> bytes:
+    headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Cache-Control": "no-cache"}
+    try:
+        import requests as _requests
+        resp = _requests.get(url, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        return resp.content
+    except ImportError:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as fp:
+            return fp.read()
+
+
+@app.get("/api/task-source")
+def task_source_refresh(url: str | None = None):
+    target = (url or TASK_SOURCE_URL).strip()
+    if target != TASK_SOURCE_URL:
+        raise HTTPException(400, "暂不支持第三方任务源")
+    try:
+        raw = _fetch_task_source(target)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"连不上任务源（{exc.__class__.__name__}）：{exc}")
+    try:
+        items = taskpack.parse_index(raw.decode("utf-8", "replace"))
+    except taskpack.PackError as exc:
+        raise HTTPException(502, str(exc))
+    installed = {p["pkg"]["id"]: p["pkg"]["version"] for p in _package_plans()}
+    base = target.rsplit("/", 1)[0] + "/"
+    for it in items:
+        cur = installed.get(it["id"])
+        it["installed_version"] = cur
+        it["update"] = bool(cur and cur != it["version"])
+        it["url"] = base + it["file"]
+    return {"ok": True, "source": target, "packages": items,
+            "fetched_at": datetime.now().isoformat(timespec="seconds")}
+
+
+@app.post("/api/task-source/install")
+def task_source_install(payload: dict = Body(...)):
+    url = (payload.get("url") or "").strip()
+    if not url.startswith(TASK_SOURCE_URL.rsplit("/", 1)[0].rsplit("/", 1)[0] + "/"):
+        raise HTTPException(400, "任务包地址不合法")
+    try:
+        data = _fetch_task_source(url, timeout=25)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"下载任务包失败（{exc.__class__.__name__}）：{exc}")
+    expect = (payload.get("sha256") or "").lower()
+    if expect:
+        got = hashlib.sha256(data).hexdigest()
+        if got != expect:
+            raise HTTPException(400, "文件校验失败（sha256 不一致），可能是源里更新了清单，请刷新后再试")
+    try:
+        manifest = taskpack.read_package(data)
+    except taskpack.PackError as exc:
+        raise HTTPException(400, str(exc))
+    if payload.get("id") and payload["id"] != manifest["id"]:
+        raise HTTPException(400, "下载到的是另一个任务包")
+    result = _install_manifest(manifest, "online", bool(payload.get("overwrite")))
+    result["installed_version"] = manifest["version"]
+    return result
 
 
 @app.post("/api/instances/{name}/screenshot")
@@ -2319,7 +2600,17 @@ def _warm_scan_worker() -> None:
                 _scan_worker_start()
     except Exception:  # noqa: BLE001 - 预热失败不影响功能，识别时还会再拉一次
         return
+    devices = set(_adb_devices())
     for path in _instance_files():
+        try:
+            cfg = _load(path)
+            serial = str(((cfg.get("script") or {}).get("device") or {}).get("serial") or "")
+        except Exception:  # noqa: BLE001 - 读不到配置就跳过这一台
+            continue
+        # 模拟器没开时不要去建 Device：引擎的 Device() 发现 serial 不在线会自动
+        # 调 emulator_start() 把模拟器拉起来，用户只是打开 YYJio 就会多开一个模拟器。
+        if serial and devices and serial not in devices:
+            continue
         try:
             _scan_worker_call({"cmd": "warm", "config": path.stem}, timeout=40)
         except Exception:  # noqa: BLE001 - 单台预热失败忽略

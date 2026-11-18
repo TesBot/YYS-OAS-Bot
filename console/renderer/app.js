@@ -519,7 +519,9 @@
       const r = await api(`/api/instances/${name}`, { method: 'DELETE' });
       if (r && r.remaining === 0) toast('已解绑，当前没有账号了，可重新绑定', 'ok');
       else toast('已解绑', 'ok');
+      // 编排里引用过这个账号的步骤已被后端摘掉，这里连编排一起拉一遍
       await loadInstances();
+      await loadFlows();
       render();
     } catch (e) { toast('解绑失败：' + e.message, 'err'); }
   }
@@ -641,8 +643,12 @@
   }
 
   function suggestName() {
+    // 连编排里引用过的名字一起避开：否则解绑后重新绑定又取到 oas1，
+    // 旧编排会被当成已绑定到新设备上。
+    const used = new Set(state.instances.map((x) => x.name));
+    (state.flows || []).forEach((f) => (f.accounts || []).forEach((a) => used.add(a)));
     let i = 1;
-    while (state.instances.some((x) => x.name === 'oas' + i)) i += 1;
+    while (used.has('oas' + i)) i += 1;
     return 'oas' + i;
   }
 
@@ -742,16 +748,6 @@
   }
 
   function renderFlows(root) {
-    if (!state.instances.length) {
-      root.appendChild(el('div', { class: 'empty' },
-        el('div', { html: icon('link', 26) }),
-        el('strong', { text: '还没有绑定账号' }),
-        el('p', { text: '编排表挂在账号下面：先绑定一台模拟器，再给它编一份要跑的任务顺序。一个账号可以有多份，切换着用。' }),
-        btn('绑定账号', 'plus', openBindDrawer, 'primary'),
-      ));
-      return;
-    }
-
     if (!state.flowId && state.flows.length) state.flowId = state.flows[0].id;
 
     // 按「首个账号」分组：多账号联动的编排归到队长名下，避免同一份出现两次。
@@ -765,6 +761,20 @@
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(flow);
     });
+
+    // 没有任何账号时，只要还有「引用了已解绑账号」的编排，也要把它们列出来，
+    // 否则重启后账号被清空，编排就凭空消失了。
+    const orphansFirst = groups.get('') || [];
+    if (!state.instances.length && !orphansFirst.length) {
+      // 绑定模拟器是「总览」页的事，这里只引导过去，不再弹绑定抽屉
+      root.appendChild(el('div', { class: 'empty' },
+        el('div', { html: icon('link', 26) }),
+        el('strong', { text: '还没有绑定账号' }),
+        el('p', { text: '先去「总览」页绑定一台模拟器，回来就能给它编任务顺序了。一个账号可以有多份编排，切换着用。' }),
+        btn('去总览页绑定', 'grid', () => go('overview'), 'primary'),
+      ));
+      return;
+    }
 
     const layout = el('div', { class: 'fl-layout' });
     const side = el('aside', { class: 'fl-side' });
@@ -780,8 +790,6 @@
       const group = el('div', { class: 'fl-group' });
       group.appendChild(el('div', { class: 'fl-group-head' },
         el('strong', { class: 'grow', text: '任务库（未绑定账号）' })));
-      group.appendChild(el('div', { class: 'fl-none',
-        text: '这些是通用任务模板：先绑定账号，再用编排的「改绑定」挂到任意账号。' }));
       orphans.forEach((flow) => group.appendChild(flowItem(flow)));
       side.appendChild(group);
     }
@@ -804,14 +812,12 @@
     group.appendChild(el('div', { class: 'fl-group-head' },
       avatarEl(inst),
       el('div', { class: 'fl-group-id' },
-        el('strong', { text: inst.nickname || inst.name }),
-        el('span', { text: inst.serial || '未绑定模拟器' }),
+        el('div', { class: 'fl-group-name' },
+          el('strong', { text: inst.nickname || inst.name }),
+          inst.server ? el('span', { class: 'fl-group-server', text: inst.server }) : null,
+        ),
+        el('span', { class: 'fl-group-alias', text: inst.name }),
       ),
-      el('div', { class: 'grow' }),
-      el('button', {
-        class: 'icon-btn', title: '给这个账号新建编排',
-        'data-act': 'newFlow', 'data-account': inst.name, html: icon('plus', 13),
-      }),
     ));
     if (!flows.length) group.appendChild(el('div', { class: 'fl-none', text: '还没有编排' }));
     flows.forEach((flow) => group.appendChild(flowItem(flow)));
@@ -822,7 +828,7 @@
     const job = runningJobOf(flow.id);
     const running = !!job;
     const locked = !running && flowLocked(flow);
-    const meta = [`${flow.steps.length} 步`];
+    const meta = [`${flow.steps.length} 个任务`];
     if (flow.accounts.length > 1) meta.push(`${flow.accounts.length} 账号联动`);
     const lp = loopLabel(flow.loop);
     if (lp !== '仅一次') meta.push(lp);
@@ -870,21 +876,23 @@
       job ? el('span', { class: 'badge badge-accent', text: '执行中' }) : null,
       el('span', { class: 'badge ' + (flow.accounts.length > 1 ? 'badge-gold' : 'badge-dim'),
         text: flow.accounts.length > 1 ? `${flow.accounts.length} 账号联动` : '单账号' }),
-      el('span', { class: 'badge badge-dim', text: `${flow.steps.length} 步` }),
+      el('span', { class: 'badge badge-dim', text: `${flow.steps.length} 个任务` }),
       el('span', { class: 'badge ' + (normalizeLoop(flow.loop).mode === 'once' ? 'badge-dim' : 'badge-gold'),
         text: loopLabel(flow.loop) }),
       el('span', { class: 'badge ' + (normalizeIdle(flow.idle).enable ? 'badge-gold' : 'badge-dim'),
         text: idleLabel(flow.idle) }),
     ));
-    head.appendChild(el('div', { class: 'row' },
+    // 按钮单独一行并允许换行：编排名字长 + 7 个按钮挤在一行会溢出卡片
+    head.appendChild(el('div', { class: 'fl-actions' },
       btn(job ? '停止执行' : '执行', job ? 'x' : 'play',
         job ? () => stopJob(job.id) : () => runFlow(flow), job ? 'danger' : 'primary'),
       btn('随机发呆', 'moon', () => openIdleDrawer(flow), 'ghost'),
       btn('循环设置', 'refresh', () => openLoopDrawer(flow), 'ghost'),
+      el('span', { class: 'fl-actions-sep' }),
       btn('改绑定', 'cog', () => openFlowBindDrawer(flow), 'ghost'),
       btn('重命名', 'sliders', () => renameFlow(flow), 'ghost'),
       btn('存为自定义方案', 'copy', () => saveFlowAsTemplate(flow), 'ghost'),
-      btn('删除', 'trash', () => deleteFlow(flow), 'ghost'),
+      btn('删除', 'trash', () => deleteFlow(flow), 'ghost fl-del'),
     ));
     head.appendChild(el('div', { class: 'fl-bind' },
       el('span', { class: 'small muted', text: '绑定账号' }),
@@ -899,7 +907,7 @@
       bar.appendChild(el('div', { class: 'panel-head' },
         el('h3', {}, '正在执行 ', statusBadge(job.status)),
         el('div', { class: 'row' },
-          el('span', { class: 'sub', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 步 · ${(job.started || '').replace('T', ' ')}` }),
+          el('span', { class: 'sub', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 个任务 · ${(job.started || '').replace('T', ' ')}` }),
           btn('停止', 'x', () => stopJob(job.id), 'danger'),
         ),
       ));
@@ -980,9 +988,6 @@
     row.appendChild(el('div', { class: 'step-ops' },
       el('button', { class: 'icon-btn', title: '上移', 'data-act': 'stepUp', 'data-id': step.id, html: icon('up', 13) }),
       el('button', { class: 'icon-btn', title: '下移', 'data-act': 'stepDown', 'data-id': step.id, html: icon('down', 13) }),
-      step.task === 'custom_click'
-        ? el('button', { class: 'icon-btn', title: '更换方案', 'data-act': 'customClickSwap', 'data-id': step.id, html: icon('copy', 13) })
-        : null,
       el('button', { class: 'icon-btn', title: step.task === 'custom_click' ? '编辑自定义点击方案' : '配置参数',
         'data-act': step.task === 'custom_click' ? 'customClickConfig' : 'stepConfig',
         'data-id': step.id, html: icon('cog', 13) }),
@@ -1279,10 +1284,156 @@
     render();
   }
 
+  // ── 任务包（自定义任务分类） ──────────────────────────────
+  async function findPlan(planId) {
+    let plan = (state.customPlans || []).find((p) => p.id === planId);
+    if (!plan) { await loadCustomPlans(); plan = (state.customPlans || []).find((p) => p.id === planId); }
+    return plan || null;
+  }
+
+  // 返回实际保存路径（桌面端会弹「另存为」；浏览器里退回下载目录，路径未知）
+  async function saveBase64File(filename, base64) {
+    const desk = window.oasDesktop;
+    if (desk && desk.files && desk.files.saveTaskPackage) {
+      const r = await desk.files.saveTaskPackage(filename, base64);
+      if (r && r.canceled) return '';
+      if (r && r.ok && r.path) return r.path;
+      throw new Error((r && r.error) || '保存失败');
+    }
+    const bin = atob(base64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) buf[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/zip' }));
+    const a = el('a', { href: url, download: filename });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return '';
+  }
+
+  function readFileBase64(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const s = String(fr.result || '');
+        const i = s.indexOf(',');
+        resolve(i >= 0 ? s.slice(i + 1) : s);
+      };
+      fr.onerror = () => reject(new Error('读取文件失败'));
+      fr.readAsDataURL(file);
+    });
+  }
+
+  // 从文件导入：先 inspect 看内容，再决定是否覆盖
+  function importTaskPackage() {
+    const input = el('input', { type: 'file', accept: '.yyjio-task,application/zip', style: 'display:none' });
+    document.body.appendChild(input);
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      input.remove();
+      if (!file) return;
+      try {
+        const b64 = await readFileBase64(file);
+        const info = await api('/api/task-packages/inspect', {
+          method: 'POST', body: { data: b64, filename: file.name },
+        });
+        const p = info.package || {};
+        const lines = [
+          `作者：${p.author || '未填写'} · 版本 ${p.version || '?'}`,
+          p.description ? `简介：${p.description}` : '',
+          `共 ${(info.layers || []).length} 层：${(info.layers || []).map((l) => l.name).join(' / ')}`,
+        ].filter(Boolean);
+        const overwrite = !!info.same_version;
+        const agreed = await askConfirm({
+          title: overwrite ? `覆盖已安装的「${p.name}」` : `导入任务包「${p.name}」`,
+          message: (overwrite ? '本机已装同一个版本，继续会覆盖它。\n\n' : '') + lines.join('\n'),
+          okText: overwrite ? '覆盖导入' : '导入',
+        });
+        if (!agreed) return;
+        await api('/api/task-packages/install', {
+          method: 'POST', body: { data: b64, overwrite },
+        });
+        await Promise.all([loadCatalog(true), loadCustomPlans()]);
+        toast(`已导入「${p.name} ${p.version}」`, 'ok');
+        // 「自定义任务」分类只有在装了包之后才存在，装完重建选择器并直接切过去
+        state.pickerCat = '自定义任务';
+        closeModal();
+        openTaskPicker();
+      } catch (e) {
+        toast('导入失败：' + e.message, 'err');
+      }
+    });
+    input.click();
+  }
+
+  // 在线刷新：列出任务源里的包，可安装 / 更新
+  // 在线任务库：直接铺在「添加任务」窗口的任务列表区域里，不再另开弹窗
+  function openTaskSource() {
+    openTaskPicker({ online: true });
+  }
+
+  // 导出方案为任务包
+  function exportTaskPackage(plan) {
+    const pkg = plan.pkg || {};
+    const nameInput = el('input', { class: 'input', value: pkg.name || plan.name });
+    const authorInput = el('input', { class: 'input', value: pkg.author || '' , placeholder: '你的名字，会显示在对方界面里' });
+    const versionInput = el('input', { class: 'input', value: pkg.version || '1.0.0' });
+    const descInput = el('textarea', { class: 'input', rows: '3', placeholder: '一句话说明这个任务做什么（可留空）' });
+    descInput.value = pkg.description || '';
+    const body = el('div', {},
+      el('div', { class: 'form-grid' },
+        el('label', { class: 'field' }, el('span', { text: '任务名称' }), nameInput),
+        el('label', { class: 'field' }, el('span', { text: '作者' }), authorInput)),
+      el('div', { class: 'form-grid' },
+        el('label', { class: 'field' }, el('span', { text: '版本' }), versionInput)),
+      el('label', { class: 'field' }, el('span', { text: '简介' }), descInput),
+      el('p', { class: 'small muted', text: '导出的是这个方案本身（含参考画面、目标图与区域），对方导入后可直接加到编排里。' }));
+    openModal({
+      title: '导出任务包',
+      body,
+      foot: [
+        btn('取消', 'x', closeModal, 'ghost'),
+        btn('导出', 'download', async () => {
+          const author = authorInput.value.trim();
+          const name = nameInput.value.trim();
+          if (!author) return toast('请填写作者名', 'err');
+          if (!name) return toast('请填写任务名称', 'err');
+          try {
+            const r = await api('/api/task-packages/export', {
+              method: 'POST',
+              body: { plan_id: plan.id, name, author, version: versionInput.value.trim(), description: descInput.value.trim() },
+            });
+            const savedPath = await saveBase64File(r.filename, r.data);
+            if (!savedPath) return;  // 用户取消了另存为
+            closeModal();
+            const info = r.info || {};
+            const desc = String(descInput.value || '').trim();
+            await askConfirm({
+              title: '已导出任务包',
+              message: [
+                `${name}  v${versionInput.value.trim() || info.version || '1.0.0'}`,
+                `作者：${author}`,
+                desc ? `简介：${desc}` : '简介：（没有填写）',
+                '',
+                `保存位置：${savedPath}`,
+                `文件大小：${(r.size / 1024).toFixed(1)} KB`,
+              ].join('\n'),
+              okText: '好', cancelText: '关闭',
+            });
+          } catch (e) {
+            toast('导出失败：' + e.message, 'err');
+          }
+        }, 'primary'),
+      ],
+    });
+  }
+
   function openCustomClickLibrary(opts) {
     const forStep = opts && opts.forStep;
     const body = el('div');
-    const list = el('div', { class: 'grid grid-2', style: 'margin-top:10px' });
+    // 方案卡要放五个按钮，两列太窄会溢出卡片，用单列
+    const list = el('div', { class: 'grid', style: 'margin-top:10px' });
     function paint() {
       list.innerHTML = '';
       if (!state.customPlans.length) {
@@ -1307,6 +1458,7 @@
           }, 'primary'));
         }
         ops.appendChild(smallBtn('编辑', 'cog', () => openCustomClickEditor(p.id, false), 'ghost'));
+        ops.appendChild(smallBtn('导出', 'download', () => exportTaskPackage(p), 'ghost'));
         ops.appendChild(smallBtn('复制', 'copy', async () => {
           try { await api(`/api/custom-clicks/${p.id}/duplicate`, { method: 'POST' }); await loadCustomPlans(); paint(); }
           catch (e) { toast('复制失败：' + e.message, 'err'); }
@@ -1333,7 +1485,7 @@
     paint();
     body.appendChild(list);
     openDrawer({
-      kicker: '自定义点击', title: forStep ? '更换方案' : '方案库', body,
+      kicker: '自定义点击', title: forStep ? '选择方案' : '方案库', body,
       foot: [btn('新建方案', 'plus', () => openCustomClickEditor(null, !forStep), 'primary'),
         btn('关闭', 'x', closeDrawer, 'ghost')],
     });
@@ -1744,6 +1896,17 @@
       kicker: '自定义点击', title: src ? `编辑方案 · ${src.name}` : '新建方案', body,
       foot: [
         btn('取消', 'x', closeDrawer, 'ghost'),
+        btn('导出任务包', 'download', async () => {
+          if (!draft.steps.length) return toast('至少保留一层', 'err');
+          try {
+            const payload = ccPayload(draft);
+            const r = src
+              ? await api(`/api/custom-clicks/${src.id}`, { method: 'PUT', body: payload })
+              : await api('/api/custom-clicks', { method: 'POST', body: payload });
+            await loadCustomPlans();
+            exportTaskPackage(r.plan);
+          } catch (e) { toast('保存失败：' + e.message, 'err'); }
+        }, 'ghost'),
         btn('保存方案', 'check', async () => {
           if (!draft.steps.length) return toast('至少保留一层', 'err');
           try {
@@ -1798,6 +1961,11 @@
       tplSelect = el('select', { class: 'input' });
       tplSelect.appendChild(el('option', { value: '', text: '空白编排' }));
       state.flowLib.forEach((t) => tplSelect.appendChild(el('option', { value: t.id, text: t.name })));
+      // 选了方案就把它的名字带过来，不用再手填一次
+      tplSelect.addEventListener('change', () => {
+        const picked = state.flowLib.find((t) => t.id === tplSelect.value);
+        if (picked) nameInput.value = picked.name;
+      });
       body.appendChild(field('从自定义方案创建', tplSelect));
     }
 
@@ -1820,7 +1988,8 @@
             })), accounts);
           }
           try {
-            const r = await api('/api/flows', { method: 'POST', body: { name, accounts, steps } });
+            const extra = tpl ? { loop: tpl.loop, idle: tpl.idle } : {};
+            const r = await api('/api/flows', { method: 'POST', body: { name, accounts, steps, ...extra } });
             state.flowId = r.flow.id;
             await loadFlows();
             closeDrawer();
@@ -2349,10 +2518,10 @@
     if (job.status === 'running') {
       const prefix = loopRound(job) ? loopRound(job) + ' · ' : '';
       sub = job.note ? `${prefix}${job.note}`
-        : cur ? `${prefix}正在执行：${cur} · 进度 ${done}/${job.steps.length} 步`
+        : cur ? `${prefix}正在执行：${cur} · 进度 ${done}/${job.steps.length} 个任务`
           : `${prefix}准备中…`;
     } else {
-      sub = `已结束（${{ finished: '全部成功', failed: '有失败步骤', cancelled: '已停止' }[job.status] || job.status}）· ${done}/${job.steps.length} 步`;
+      sub = `已结束（${{ finished: '全部成功', failed: '有失败步骤', cancelled: '已停止' }[job.status] || job.status}）· ${done}/${job.steps.length} 个任务`;
     }
     const title = $('#dockTitle'), subEl = $('#dockSub'), dot = $('#dockDot'), dockEl = $('#logDock');
     if (title) title.textContent = job.flow_name;
@@ -2446,10 +2615,11 @@
   }
 
   /* ---- 任务选择器 ---- */
-  function openTaskPicker() {
+  function openTaskPicker(opts) {
+    const wantOnline = !!(opts && opts.online);
     const flow = currentFlow();
     if (!flow) return toast('请先选择编排表', 'err');
-    let cat = '全部';
+    let cat = state.pickerCat || '全部';  // 记住上次选的分类，安装/刷新后不会跳回「全部」
     let q = '';
 
     const tabs = el('div', { class: 'chips' });
@@ -2473,6 +2643,19 @@
     );
     const quickCards = el('div', { class: 'tc-quick' }, teamCard, clickCard);
     const cats = ['全部'].concat((state.catalog ? state.catalog.categories : []).map((c) => c.key));
+    // 「自定义任务」分类自己的入口：在线刷新 / 从文件导入
+    const pkgBar = el('div', { class: 'pkg-bar', hidden: true },
+      el('span', { class: 'pkg-bar-hint', text: '任务包是别人做好的自定义点击方案，导入后可以直接加到编排里。' }),
+      el('div', { class: 'pkg-bar-ops' },
+        btn('在线刷新', 'refresh', () => paintOnline(), 'ghost sm'),
+        btn('从文件导入', 'download', () => importTaskPackage(), 'primary sm')));
+    const onlineBar = el('div', { class: 'pkg-bar', hidden: true },
+      el('span', { class: 'pkg-bar-hint', text: '在线任务库：从官方任务包仓库拉清单，装好后会出现在「自定义任务」里。' }),
+      el('div', { class: 'pkg-bar-ops' },
+        btn('刷新清单', 'refresh', () => paintOnline(), 'ghost sm'),
+        btn('返回', 'chevron-left', () => { onlineMode = false; paintTabs(); paintGrid(); }, 'ghost sm')));
+    let onlineMode = false;
+
 
     // 分类说明直接挂在标签下面：选哪个分类就说明这个分类在游戏里是什么。
     const catLine = el('p', { class: 'small muted mt-14' });
@@ -2485,35 +2668,125 @@
       tabs.innerHTML = '';
       cats.forEach((c) => {
         const chip = el('button', { class: 'chip' + (cat === c ? ' active' : ''), text: c });
-        chip.addEventListener('click', () => { cat = c; paintTabs(); paintCatLine(); paintGrid(); });
+        chip.addEventListener('click', () => { cat = c; state.pickerCat = c; paintTabs(); paintCatLine(); paintGrid(); });
         tabs.appendChild(chip);
       });
+      pkgBar.hidden = onlineMode || cat !== '自定义任务';
+      if (typeof localBox !== 'undefined' && localBox) localBox.hidden = onlineMode;
+      onlineBar.hidden = !onlineMode;
+    }
+
+    // 在线任务库直接用同一个 grid 渲染，本地分类条先隐藏
+    async function paintOnline() {
+      onlineMode = true;
+      localBox.hidden = true;
+      pkgBar.hidden = true;
+      onlineBar.hidden = false;
+      grid.innerHTML = '';
+      grid.appendChild(el('div', { class: 'empty', style: 'grid-column:1/-1' },
+        el('strong', { text: '正在获取在线任务库…' })));
+      try {
+        const payload = await api('/api/task-source');
+        const items = (payload && payload.packages) || [];
+        grid.innerHTML = '';
+        if (!items.length) {
+          grid.appendChild(el('div', { class: 'empty', style: 'grid-column:1/-1' },
+            el('strong', { text: '任务源里还没有任务包' }),
+            el('p', { text: '作者发布后会出现在这里，也可以先用「从文件导入」。' })));
+          return;
+        }
+        items.forEach((it) => {
+          const installed = it.installed_version && it.installed_version === it.version;
+          const ops = el('div', { class: 'tc-ops' });
+          if (installed) {
+            ops.appendChild(el('span', { class: 'badge badge-dim', text: '已安装' }));
+          } else {
+            ops.appendChild(btn(it.update ? `更新到 ${it.version}` : '安装', 'download', async () => {
+              try {
+                await api('/api/task-source/install', {
+                  method: 'POST', body: { url: it.url, id: it.id, sha256: it.sha256, overwrite: !!it.update },
+                });
+                await Promise.all([loadCatalog(true), loadCustomPlans()]);
+                toast(`已安装「${it.name} ${it.version}」`, 'ok');
+                await paintOnline();
+              } catch (e) { toast('安装失败：' + e.message, 'err'); }
+            }, 'primary sm'));
+          }
+          grid.appendChild(el('div', { class: 'task-card' },
+            el('div', { class: 'tc-top' },
+              el('span', { class: 'tc-name', text: it.name }),
+              it.update ? el('span', { class: 'badge badge-gold', text: '有更新' }) : null,
+              el('span', { class: 'badge badge-dim', text: it.author || '匿名' }),
+              el('span', { class: 'badge badge-dim', text: `v${it.version}` })),
+            el('div', { class: 'tc-desc', text: (it.description || '') + (it.steps ? ` · ${it.steps} 层` : '') }),
+            ops));
+        });
+      } catch (e) {
+        grid.innerHTML = '';
+        grid.appendChild(el('div', { class: 'empty', style: 'grid-column:1/-1' },
+          el('strong', { text: '拉取在线任务库失败' }),
+          el('p', { text: e.message })));
+      }
     }
 
     function paintGrid() {
       grid.innerHTML = '';
       const tasks = state.catalog.tasks.filter((t) => {
         if (t.hidden) return false;
-        if (t.pseudo) return false; // 伪任务（自定义组队）在弹窗顶部有专属卡片，不在网格里重复出现
+        // 伪任务（自定义组队）在弹窗顶部有专属卡片；但任务包条目带 plan_id，要在网格里出现
+        if (t.pseudo && !t.plan_id) return false;
         if (cat !== '全部' && t.category !== cat) return false;
         if (q && !(t.name.includes(q) || t.key.includes(q.toLowerCase()) || (t.desc || '').includes(q))) return false;
         return true;
       });
       if (!tasks.length) {
-        grid.appendChild(el('div', { class: 'empty', style: 'grid-column:1/-1' }, el('strong', { text: '没有匹配的玩法' })));
+        // 「自定义任务」分类在还没装任何任务包时是空的，这里直接告诉用户入口在上面
+        const emptyText = (cat === '自定义任务' && !q)
+          ? '还没有安装任务包，点上面的「在线刷新」或「从文件导入」'
+          : '没有匹配的玩法';
+        grid.appendChild(el('div', { class: 'empty', style: 'grid-column:1/-1' }, el('strong', { text: emptyText })));
         return;
       }
       tasks.forEach((t) => {
+        const ops = el('div', { class: 'tc-ops' });
+        if (t.plan_id) {
+          ops.appendChild(btn('加到编排', 'plus', async () => {
+            try {
+              const plan = await findPlan(t.plan_id);
+              if (!plan) return toast('这个任务包的方案已不存在，请重新导入', 'err');
+              await addCCStepToFlow(plan);
+              closeModal();
+              toast(`已加入「${plan.name}」`, 'ok');
+            } catch (e) { toast('添加失败：' + e.message, 'err'); }
+          }, 'primary sm'));
+          ops.appendChild(btn('删除', 'trash', async () => {
+            const pkg = t.package || {};
+            const agreed = await askConfirm({
+              title: '删除任务包',
+              message: `「${t.name}」（${pkg.author || '未知作者'} · ${pkg.version || ''}）会从本机移除，用到它的编排步骤会失去配置。`,
+              okText: '删除', danger: true,
+            });
+            if (!agreed) return;
+            try {
+              await api(`/api/task-packages/${encodeURIComponent(pkg.id || '')}`, { method: 'DELETE' });
+              await Promise.all([loadCatalog(true), loadCustomPlans()]);
+              toast('已删除任务包', 'ok');
+              paintGrid();
+            } catch (e) { toast('删除失败：' + e.message, 'err'); }
+          }, 'danger sm'));
+        } else {
+          ops.appendChild(btn('配置并添加', 'plus', () => { closeModal(); openStepConfig(null, t.key); }, 'primary sm'));
+        }
         const card = el('div', { class: 'task-card' },
           el('div', { class: 'tc-top' },
             el('span', { class: 'tc-name', text: t.name }),
             t.team ? el('span', { class: 'badge badge-gold', text: '可联动' }) : null,
+            t.plan_id && t.package && t.package.author
+              ? el('span', { class: 'badge badge-dim', text: t.package.author }) : null,
             el('span', { class: 'badge badge-dim', text: t.category }),
           ),
           el('div', { class: 'tc-desc', text: t.desc || '' }),
-          el('div', { class: 'tc-ops' },
-            btn('配置并添加', 'plus', () => { closeModal(); openStepConfig(null, t.key); }, 'primary sm'),
-          ),
+          ops,
         );
         grid.appendChild(card);
       });
@@ -2522,13 +2795,15 @@
     const search = el('input', { class: 'input', placeholder: '搜索玩法名称…' });
     search.addEventListener('input', () => { q = search.value.trim(); paintGrid(); });
 
-    paintTabs(); paintCatLine(); paintGrid();
+    const localBox = el('div', {},
+      el('div', { class: 'lib-toolbar' },
+        el('div', { class: 'search' }, el('span', { html: icon('search', 14) }), search)),
+      tabs, catLine);
+    paintTabs(); paintCatLine();
+    if (wantOnline) paintOnline(); else paintGrid();
     openModal({
       title: '添加任务',
-      body: el('div', {}, quickCards,
-        el('div', { class: 'lib-toolbar' },
-          el('div', { class: 'search' }, el('span', { html: icon('search', 14) }), search)),
-        tabs, catLine, grid),
+      body: el('div', {}, quickCards, pkgBar, onlineBar, localBox, grid),
       foot: [btn('关闭', 'x', closeModal, 'ghost')],
     });
   }
@@ -2555,7 +2830,7 @@
       mine.forEach((tpl) => {
         list.appendChild(el('div', { class: 'task-card' },
           el('div', { class: 'tc-top' }, el('span', { class: 'tc-name', text: tpl.name })),
-          el('div', { class: 'tc-desc', text: `${tpl.steps.length} 步` }),
+          el('div', { class: 'tc-desc', text: `${tpl.steps.length} 个任务` }),
           el('div', { class: 'tc-ops' },
             btn('追加步骤', 'plus', async () => {
               const flow = currentFlow();
@@ -2580,7 +2855,8 @@
       });
       body.appendChild(list);
     }
-    openModal({ title: '选择方案', body, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
+    openModal({ title: '选择方案', body,
+      foot: [btn('关闭', 'x', closeModal, 'ghost')] });
   }
 
   /* ---- 步骤参数配置 ---- */
@@ -2802,7 +3078,7 @@
               tb.appendChild(el('tr', {},
                 el('td', { text: job.flow_name }),
                 el('td', { class: 'mono', text: job.current ? taskMeta(job.current).name : '—' }),
-                el('td', { class: 'mono', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 步` }),
+                el('td', { class: 'mono', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 个任务` }),
                 el('td', { class: 'mono muted', text: (job.started || '').replace('T', ' ') }),
                 el('td', {}, el('button', { class: 'btn btn-sm btn-danger', text: '停止', 'data-act': 'stopJob', 'data-id': job.id })),
               ));
@@ -3164,7 +3440,6 @@
       }
       openCustomClickEditor(s.plan_id, false);
     },
-    customClickSwap: (btn) => openCustomClickLibrary({ forStep: btn.dataset.id }),
     teamConfig: (btn) => openTeamDrawer(btn.dataset.id),
     openJob: (btn) => openJobDrawer(btn.dataset.id),
     openLog: (btn) => openLogDrawer(btn.dataset.id, taskMeta(btn.dataset.task).name),

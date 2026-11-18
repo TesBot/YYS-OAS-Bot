@@ -23,3 +23,11 @@ engine/**/__pycache__/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 构建/调试临时目录
+.build-logs/
+.eb-cache/
+.electron-cache/
+.electron-data/
+.npm-cache/
+.tmp/

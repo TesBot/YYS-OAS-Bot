@@ -24,6 +24,7 @@
       <a href="#ui">界面</a>
       <a href="#guide">使用说明</a>
       <a href="#custom">自定义功能</a>
+      <a href="#taskpack">任务包</a>
       <a href="#faq">常见问题</a>
       <a href="#download">下载</a>
     </nav>
@@ -268,6 +269,67 @@
                 <p>两个账号需要互为好友或同寮，队员在线并停在庭院，队长会按昵称在好友列表里找人。</p>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- 任务包 -->
+  <section id="taskpack">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="tag">TASK PACKS</span>
+        <h2>任务包：别人做好的点击流程，装进来就能用</h2>
+        <p>把一份「自定义点击」方案（含参考画面、目标图案、点击区域与各层参数）打成 <code>.yyjio-task</code> 文件，
+          就能发给别人 —— 对方装好后直接加进自己的编排表。</p>
+      </div>
+
+      <div class="split">
+        <div>
+          <span class="kicker">INSTALL</span>
+          <h3>装一个任务包</h3>
+          <p>任务编排 → 添加任务 → 分类选 <b>自定义任务</b>，然后二选一：</p>
+          <ul>
+            <li><b>在线刷新</b>：从官方任务库（<a href="https://github.com/TesBot/YYJio-Tasks">TesBot/YYJio-Tasks</a>）拉清单，点「安装」即可；已装过的会显示「更新到 x.y.z」。</li>
+            <li><b>从文件导入</b>：选别人发你的 <code>.yyjio-task</code> 文件，先看作者/版本/简介与层数，确认再装。</li>
+          </ul>
+          <p>装好后卡片上点 <b>加到编排</b>，它就成了编排表里的一个步骤，和其它玩法一样排顺序、跑循环。</p>
+          <div class="note" style="margin-top:16px">
+            <strong>版本固定：</strong>编排引用的是「<code>包名@版本</code>」，作者更新到 1.1.0 不会偷偷改掉你已经在用的 1.0.0 ——
+            要升级得自己再装一次。
+          </div>
+        </div>
+        <div>
+          <figure class="shot">
+            <img src="assets/img/plan-direct.png" alt="自定义点击方案编辑器" loading="lazy" />
+            <figcaption>任务包的内容就是一份保存好的自定义点击方案。</figcaption>
+          </figure>
+        </div>
+      </div>
+
+      <div class="split rev" style="margin-top:44px">
+        <div>
+          <figure class="shot">
+            <img src="assets/img/flows.png" alt="编排表里的自定义点击步骤" loading="lazy" />
+            <figcaption>加到编排后，就是一个普通步骤：可上移、可禁用、可单独重跑。</figcaption>
+          </figure>
+        </div>
+        <div>
+          <span class="kicker">UPDATE</span>
+          <h3>任务包会一直更新</h3>
+          <p>新的任务包做好后会发布到任务库，你在客户端点一次 <b>在线刷新</b> 就能看到；
+            已经装过的会显示 <b>更新到 x.y.z</b>，点一下就换成新版本，不用自己再去找、再装一遍。</p>
+          <p>加了「在线刷新」，就不用盯着群里有没有新包 —— 打开这个分类，有更新就会出现。</p>
+          <table class="params">
+            <tr><th>项目</th><th>说明</th></tr>
+            <tr><td>获取方式</td><td>在线刷新（推荐）／ 从文件导入别人发的 <code>.yyjio-task</code></td></tr>
+            <tr><td>版本</td><td>编排引用的是「包名@版本」，更新不会悄悄改掉你正在用的旧版本</td></tr>
+            <tr><td>兼容</td><td>坐标基于 1280×720；不执行任何脚本，只有参考画面与点击区域</td></tr>
+          </table>
+          <div class="dl-actions" style="align-items:flex-start;margin-top:14px">
+            <a class="btn btn-ghost btn-sm" href="https://github.com/TesBot/YYJio-Tasks">看看现在有哪些任务包</a>
           </div>
         </div>
       </div>

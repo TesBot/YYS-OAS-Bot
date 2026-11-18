@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld('oasDesktop', {
     installFromZip: (zipPath) => ipcRenderer.invoke('install-runtime-zip', zipPath),
     onProgress: (cb) => ipcRenderer.on('runtime-progress', (_e, p) => cb(p)),
   },
+  // 文件保存（导出任务包时弹另存为）
+  files: {
+    saveTaskPackage: (filename, base64) => ipcRenderer.invoke('save-task-package', filename, base64),
+  },
   // 引擎固定使用安装包内置目录，无需配置
   wizard: {
     done: () => ipcRenderer.send('wizard-done'),

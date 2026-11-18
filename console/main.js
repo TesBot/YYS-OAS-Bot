@@ -436,6 +436,12 @@ function createWindow() {
   mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
     console.error('页面加载失败', code, desc);
   });
+  // 点右上角的× 也要确认一次，避免误关把账号清掉
+  mainWindow.on('close', (e) => {
+    if (quitting || quitConfirmed) return;
+    e.preventDefault();
+    if (confirmQuit()) beginQuit();
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -587,6 +593,25 @@ ipcMain.handle('install-runtime-zip', async (_e, zipPathArg) => {
 
 ipcMain.handle('open-external', (_e, url) => openExternalSafe(url));
 
+// 导出任务包：弹「另存为」让用户选位置，顺便把真实路径回给界面显示
+ipcMain.handle('save-task-package', async (_e, filename, base64) => {
+  try {
+    const suggested = path.join(app.getPath('downloads'), String(filename || 'task.yyjio-task'));
+    const win = (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined;
+    const res = await dialog.showSaveDialog(win, {
+      title: '保存任务包',
+      defaultPath: suggested,
+      filters: [{ name: 'YYJio 任务包', extensions: ['yyjio-task'] }],
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    const buf = Buffer.from(String(base64 || ''), 'base64');
+    fs.writeFileSync(res.filePath, buf);
+    return { ok: true, path: res.filePath, size: buf.length };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+});
+
 let bridgeStarting = false; // 向导→主窗口过渡期，防止零窗口时误判退出
 
 ipcMain.on('wizard-done', async () => {
@@ -643,6 +668,8 @@ app.whenReady().then(async () => {
   const engineDir = activeEngineDir();
   // 从旧版（OAS Studio）安装目录接回账号配置，改名后用户不用重新绑定
   migrateLegacyEngineConfig(engineDir);
+  // 每次启动也清一次：上一次异常退出（强杀 / 调试器直接关）不会留下账号
+  clearBindings(engineDir);
   const checks = engineDir ? validateEngine(engineDir) : null;
   const ready = checks && checks.bridge && checks.python;
 
@@ -743,10 +770,62 @@ function sweepInstallDir() {
 // 每个账号的实例配置、绑定关系、头像）全部删掉，导致每次重启都要重新绑定账号。
 // 现在账号绑定是长期数据，不再自动清空；需要重置请手动删除 config 下的实例文件。
 
+// 账号绑定是「会话级」的：关掉 YYJio 就当作没绑过。编排表 / 自定义方案 / 任务包
+// 存在 gui_*.json 里，与实例配置解耦，这里不碰；引用了已消失账号的编排会落到
+// 「任务库（未绑定账号）」分组，重新绑定后「改绑定」挂回去即可。
+function clearBindings(engineDir) {
+  try {
+    if (!engineDir) return;
+    const cfgDir = path.join(engineDir, 'config');
+    if (!fs.existsSync(cfgDir)) return;
+    for (const f of fs.readdirSync(cfgDir)) {
+      // 实例配置及其临时/备份文件都算账号记录
+      if (!(f.endsWith('.json') || f.endsWith('.json.bak') || f.endsWith('.json.tmp'))) continue;
+      // gui_*.json 是编排 / 自定义方案 / 策略库；template.json 是任务模板
+      if (f.startsWith('gui_') || f === 'template.json' || f === 'plans.json') continue;
+      try { fs.unlinkSync(path.join(cfgDir, f)); } catch { /* ignore */ }
+    }
+    // 头像跟着实例走，一起清掉
+    const avatarDir = path.join(cfgDir, 'gui_avatars');
+    if (fs.existsSync(avatarDir)) {
+      for (const f of fs.readdirSync(avatarDir)) {
+        try { fs.unlinkSync(path.join(avatarDir, f)); } catch { /* ignore */ }
+      }
+    }
+    // 账号资料（昵称 / 区服 / 头像引用）也不留，重绑时会重新识别
+    try { fs.writeFileSync(path.join(cfgDir, 'gui_profiles.json'), '{}\n', 'utf8'); } catch { /* ignore */ }
+    // 直接编出来的编排表也算临时的：只有点过「存为自定义方案」的才留在 gui_flow_library.json 里
+    try { fs.writeFileSync(path.join(cfgDir, 'gui_flows.json'), '{\n  "flows": []\n}\n', 'utf8'); } catch { /* ignore */ }
+  } catch { /* ignore */ }
+}
+
+// 退出前确认：退出会清掉这次绑定的账号，误点代价有点大
+let quitConfirmed = false;
+function confirmQuit() {
+  if (quitConfirmed) return true;
+  const opts = {
+    type: 'question',
+    buttons: ['取消', '退出'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: '退出 YYJio',
+    message: '要退出 YYJio 吗？',
+    detail: '退出后会清空这次绑定的账号，下次启动需要重新绑定模拟器。\n编排表和自定义方案会保留。',
+  };
+  const choice = (mainWindow && !mainWindow.isDestroyed())
+    ? dialog.showMessageBoxSync(mainWindow, opts)
+    : dialog.showMessageBoxSync(opts);
+  if (choice !== 1) return false;
+  quitConfirmed = true;
+  return true;
+}
+
 let quitting = false;
 function beginQuit() {
   if (quitting) return;
   quitting = true;
+  clearBindings(activeEngineDir());
   stopBridge();
   const sweep = setTimeout(sweepInstallDir, 1200);
   const hard = setTimeout(() => {
@@ -765,7 +844,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (e) => {
   if (quitting) return;
   e.preventDefault();
-  beginQuit();
+  if (confirmQuit()) beginQuit();
 });
 app.on('will-quit', stopBridge);
 

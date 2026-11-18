@@ -1,7 +1,7 @@
 {
   "name": "yyjio",
   "productName": "YYJio",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "痒痒鸡 · 阴阳师自动化控制台（多实例管理与任务编排，引擎解耦版）",
   "main": "main.js",
   "author": "YYJio",
@@ -38,17 +38,25 @@
           "!.cache/**",
           "!tests/**",
           "!__pycache__/**",
-          "!config/oas*.json",
-          "!config/gui_*.json",
+          "!config/*.json",
+          "!config/*.bak",
+          "!config/*.tmp",
+          "!config/gui_avatars/**",
           "!config/deploy.yaml"
         ]
+      },
+      {
+        "from": "../engine/config/template.json",
+        "to": "engine/config/template.json"
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",

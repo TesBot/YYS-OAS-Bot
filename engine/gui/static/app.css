@@ -39,6 +39,12 @@
 html, body {
   margin: 0; padding: 0; height: 100%;
   background: var(--bg);
+  /* 整窗背景图：浅米色底 + 右下角小鸡达摩 */
+  background-image: url("assets/app-bg.png");
+  background-size: cover;
+  background-position: center bottom;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--text);
   font-family: var(--sans);
   font-size: 13.5px;
@@ -75,11 +81,12 @@ body.electron .titlebar .tb-sub { font-size: 12px; color: var(--text-3); }
 body.electron .app { height: calc(100vh - 40px); }
 
 /* ---------------- 布局 ---------------- */
-.app { display: grid; grid-template-columns: 228px 1fr; height: 100vh; }
+.app { display: grid; grid-template-columns: 206px 1fr; height: 100vh; }
 
 .sidebar {
   display: flex; flex-direction: column;
-  background: #f4f0e9;
+  background: rgba(244, 240, 233, .82);
+  backdrop-filter: blur(6px);
   border-right: 1px solid var(--line);
   padding: 16px 12px 12px;
   min-width: 0;
@@ -134,19 +141,22 @@ body.electron .app { height: calc(100vh - 40px); }
 .update-btn { font-size: 11px; color: var(--text-3); }
 .update-btn:hover { color: var(--accent); }
 .update-btn.is-busy { color: var(--accent); pointer-events: none; }
-.side-links { display: flex; gap: 6px; padding: 0 8px; align-items: center; }
+.side-links { display: flex; gap: 4px; padding: 0 5px; align-items: center; flex-wrap: nowrap; }
+.side-links .link-btn { white-space: nowrap; }
+.side-links .sep { flex: none; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--text-3); font-size: 11.5px; }
 .link-btn:hover { color: var(--accent); }
 .sep { color: var(--line-2); }
 
-.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: transparent; }
 
 .topbar {
   height: 52px; flex: none;
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
-  background: #ffffff;
+  background: rgba(255, 255, 255, .78);
+  backdrop-filter: blur(6px);
 }
 .crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .crumb-root { color: var(--text-3); }
@@ -320,8 +330,8 @@ body.electron .app { height: calc(100vh - 40px); }
 /* 步骤行 */
 /* 编排：左栏「账号 → 多份编排」，右栏选中编排的步骤 */
 .fl-layout {
-  display: grid; grid-template-columns: 272px minmax(0, 1fr);
-  gap: 16px; align-items: start;
+  display: grid; grid-template-columns: 256px minmax(0, 1fr);
+  gap: 14px; align-items: start;
 }
 @media (max-width: 1040px) {
   .fl-layout { grid-template-columns: 1fr; }
@@ -342,8 +352,13 @@ body.electron .app { height: calc(100vh - 40px); }
 }
 .fl-group-head .avatar { width: 28px; height: 28px; border-radius: 8px; font-size: 12px; }
 .fl-group-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.fl-group-id strong { font-size: 12.5px; font-weight: 600; }
-.fl-group-id span {
+.fl-group-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.fl-group-id strong {
+  font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fl-group-server { font-size: 10.5px; color: var(--text-3); flex: none; }
+.fl-group-alias {
   font-size: 10.5px; color: var(--text-3); font-family: var(--mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -391,13 +406,18 @@ body.electron .app { height: calc(100vh - 40px); }
 
 .fl-detail { min-width: 0; }
 .fl-detail-head {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 13px 16px; margin-bottom: 14px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+  padding: 13px 14px; margin-bottom: 14px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
 }
-.fl-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.fl-title h2 { font-size: 15px; }
-.fl-detail-head .row { margin-left: auto; }
+/* 按钮排一行但允许换行：名字长、窗口窄时不会把「删除」顶出卡片 */
+.fl-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 8px; }
+.fl-actions-sep { width: 1px; height: 18px; background: var(--line); margin: 0 2px; flex: none; }
+.fl-spacer { flex: 1 1 auto; min-width: 0; }
+.fl-actions .fl-del { margin-left: 0; }
+.fl-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.fl-title h2 { font-size: 15px; min-width: 0; overflow-wrap: anywhere; }
+.fl-detail-head .row { margin-left: 0; }
 .fl-bind {
   flex-basis: 100%; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding-top: 9px; border-top: 1px solid var(--line);
@@ -475,13 +495,29 @@ body.electron .app { height: calc(100vh - 40px); }
 .task-card .tc-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .task-card .tc-name { font-size: 13.5px; font-weight: 600; }
 .task-card .tc-desc { font-size: 11.5px; color: var(--text-3); line-height: 1.55; min-height: 34px; }
-.task-card .tc-ops { display: flex; gap: 6px; margin-top: auto; }
+.task-card .tc-ops { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; row-gap: 6px; }
 .tpl-list { display: flex; flex-direction: column; gap: 8px; }
 .tpl-list .task-card { padding: 11px 13px; }
 .tpl-list .task-card .tc-desc { min-height: 0; }
 
 /* 任务选择器顶部的手工入口：上下两行，各自整行；组队那条压成一行 */
 .tc-quick { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+
+/* 自定义任务分类的工具条（在线刷新 / 从文件导入） */
+.pkg-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.pkg-bar[hidden] { display: none; }
+.pkg-bar-hint { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-3); }
+.pkg-bar-ops { display: flex; align-items: center; gap: 8px; flex: none; }
+
 .tc-quick .task-card { padding: 10px 12px; gap: 6px; }
 .tc-quick .task-card .tc-desc { min-height: 0; font-size: 11px; line-height: 1.45; }
 .tc-quick .task-card .tc-ops { margin-top: 2px; }
