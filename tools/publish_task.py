@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -94,6 +95,18 @@ def _git_config(repo: Path, key: str) -> str:
         return ""
 
 
+def _ahead_count(repo: Path) -> int:
+    """本地比远端多几个提交；没有 upstream 时按 0 处理（后面 push 会显式推 HEAD）。"""
+    try:
+        res = subprocess.run(["git", "rev-list", "--count", "@{u}..HEAD"], cwd=str(repo),
+                             capture_output=True, text=True, timeout=15, env=_no_prompt_env())
+        if res.returncode != 0:
+            return 0
+        return int((res.stdout or "0").strip() or 0)
+    except Exception:
+        return 0
+
+
 def _git_origin(repo: Path) -> str:
     try:
         res = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(repo),
@@ -156,42 +169,38 @@ def _no_prompt_env() -> dict:
 
 
 def _push_with(repo: Path, url: str, env: dict) -> bool:
-    res = subprocess.run(["git", "push", url, "HEAD"], cwd=str(repo),
-                         capture_output=True, text=True, timeout=300,
-                         stdin=subprocess.DEVNULL, env={**env, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"})
-    if res.returncode != 0:
-        err = _text(res.stderr or res.stdout or "").strip()
-        lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
-        pick = next((ln for ln in lines if not ln.startswith(("hint:", "To ", "branch"))), lines[-1] if lines else "")
-        if pick:
-            print("      " + pick[:220], flush=True)
-        return False
-    out = _text(res.stdout or "").strip()
-    if out:
-        print("      " + out.splitlines()[-1][:200], flush=True)
-    return True
+    """推送：带 HTTP/1.1 与重试。
 
-
-def _token_file() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(base) / "YYJio" / "github_token.txt"
-
-
-def _saved_token() -> str:
-    """第一次粘过的令牌存这里，后面就不用再粘了。"""
-    try:
-        return _token_file().read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-
-
-def _save_token(token: str) -> None:
-    try:
-        path = _token_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(token.strip() + "\n", encoding="utf-8")
-    except Exception:
-        pass
+    国内网络下 git 默认的 HTTP/2 推送经常被重置 / 卡在 connect，
+    固定 HTTP/1.1 并重试 3 次能明显提高成功率。
+    """
+    cmd = ["git", "-c", "http.version=HTTP/1.1", "-c", "http.postBuffer=1048576",
+           "-c", "http.lowSpeedLimit=500", "-c", "http.lowSpeedTime=60",
+           "push", url, "HEAD"]
+    last_err = ""
+    for attempt in range(1, 4):
+        try:
+            res = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True,
+                                 timeout=300, stdin=subprocess.DEVNULL, env=_no_prompt_env())
+        except Exception as exc:  # 超时等
+            last_err = str(exc)
+            res = None
+        if res is not None and res.returncode == 0:
+            out = _text(res.stdout or "").strip()
+            if out:
+                print("      " + out.splitlines()[-1][:200], flush=True)
+            return True
+        if res is not None:
+            err = _text(res.stderr or res.stdout or "").strip()
+            lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+            last_err = next((ln for ln in lines if not ln.startswith(("hint:", "To ", "branch"))),
+                            lines[-1] if lines else "")
+        if attempt < 3:
+            print(f"      第 {attempt} 次推送失败，{attempt * 3} 秒后重试…", flush=True)
+            time.sleep(attempt * 3)
+    if last_err:
+        print("      " + last_err[:220], flush=True)
+    return False
 
 
 def _prompt_token() -> str:
@@ -292,16 +301,24 @@ def main() -> int:
     status = run(["git", "status", "--porcelain"], repo, quiet=True)
     changes = _text(status.stdout).strip()
     if not changes:
-        print("[提示] 仓库没有变化（同版本号重复上传？），跳过提交")
+        print("[提示] 仓库没有新改动（同版本号重复上传？）")
     else:
         message = args.message or f"add: {name} v{version}（{author}）"
         run(["git", "commit", "-m", message], repo)
-        if args.no_push:
-            step("已提交（--no-push，没有推送）")
-        else:
-            step("推送到 GitHub")
-            if not push(repo, args.token):
-                raise SystemExit(1)
+
+    # 关键：即使这次没有改动，之前提交但没推上去的也要补推，
+    # 否则「本地 a head 1」会一直卡着，用户以为发布成功了。
+    ahead = _ahead_count(repo)
+    if args.no_push:
+        step("已提交（--no-push，没有推送）" + (f"，本地领先 {ahead} 个提交" if ahead else ""))
+    elif ahead == 0 and not changes:
+        step("远端已经是最新的")
+    else:
+        if ahead:
+            print(f"      本地领先远端 {ahead} 个提交，开始推送", flush=True)
+        step("推送到 GitHub")
+        if not push(repo, args.token):
+            raise SystemExit(1)
 
     print("\n完成。清单条目：")
     print(json.dumps(entry, ensure_ascii=False, indent=2))
