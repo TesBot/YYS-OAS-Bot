@@ -95,6 +95,19 @@ def _git_config(repo: Path, key: str) -> str:
         return ""
 
 
+def _sync_remote(repo: Path) -> None:
+    """先把远端引用拉新，否则 origin/main 可能是几小时前的，ahead 数会算错。
+
+    拉取失败不影响后面 push（push 会自己连一次）。
+    """
+    try:
+        subprocess.run(["git", "-c", "http.version=HTTP/1.1", "fetch", "-q", "origin"],
+                       cwd=str(repo), capture_output=True, text=True, timeout=60,
+                       stdin=subprocess.DEVNULL, env=_no_prompt_env())
+    except Exception:
+        pass
+
+
 def _ahead_count(repo: Path) -> int:
     """本地比远端多几个提交；没有 upstream 时按 0 处理（后面 push 会显式推 HEAD）。"""
     try:
@@ -335,6 +348,7 @@ def main() -> int:
 
     # 关键：即使这次没有改动，之前提交但没推上去的也要补推，
     # 否则「本地 a head 1」会一直卡着，用户以为发布成功了。
+    _sync_remote(repo)
     ahead = _ahead_count(repo)
     if args.no_push:
         step("已提交（--no-push，没有推送）" + (f"，本地领先 {ahead} 个提交" if ahead else ""))
