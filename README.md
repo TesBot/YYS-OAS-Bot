@@ -1,7 +1,8 @@
 # YYJio（痒痒鸡）
 
 阴阳师自动化控制台：多账号管理、任务编排、可视化执行日志。
-![Uploading image.png…]()
+<img width="1920" height="1229" alt="image" src="https://github.com/user-attachments/assets/c95c1fb1-8bca-4e03-9ba1-b2a5021af5c3" />
+
 
 引擎基于 [runhey/OAS](https://github.com/runhey/onmyoji_auto_script)（GPL-3.0），界面与引擎解耦。
 
