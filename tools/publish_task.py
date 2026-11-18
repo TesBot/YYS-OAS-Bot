@@ -163,6 +163,33 @@ def _stored_credential() -> tuple[str, str]:
     return "", ""
 
 
+def _token_file() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    return base / "YYJio" / "github_token.txt"
+
+
+def _saved_token() -> str:
+    """读上次保存的令牌；没有就返回空串。"""
+    try:
+        return _token_file().read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _save_token(token: str) -> None:
+    """把令牌记到本地文件，下次不用再粘（只有本人可读）。"""
+    try:
+        path = _token_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(token.strip() + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _no_prompt_env() -> dict:
     """所有 git 调用都不许弹交互：批处理里一等待就卡死。"""
     return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
