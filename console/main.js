@@ -440,7 +440,7 @@ function createWindow() {
   mainWindow.on('close', (e) => {
     if (quitting || quitConfirmed) return;
     e.preventDefault();
-    if (confirmQuit()) beginQuit();
+    askQuit();
   });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -821,6 +821,33 @@ function confirmQuit() {
   return true;
 }
 
+// 退出确认交给界面自己弹（和产品里其它弹窗同一套样式）；
+// 只有在窗口已经没了的时候才退回系统对话框。
+let quitAsking = false;
+function quitDialogInApp() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  try {
+    mainWindow.webContents.send('ask-quit');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function askQuit() {
+  if (quitConfirmed) { beginQuit(); return; }
+  if (quitAsking) return;
+  if (quitDialogInApp()) { quitAsking = true; return; }
+  if (confirmQuit()) beginQuit();
+}
+
+ipcMain.on('quit-confirm', (_e, ok) => {
+  quitAsking = false;
+  if (!ok) return;
+  quitConfirmed = true;
+  beginQuit();
+});
+
 let quitting = false;
 function beginQuit() {
   if (quitting) return;
@@ -844,7 +871,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (e) => {
   if (quitting) return;
   e.preventDefault();
-  if (confirmQuit()) beginQuit();
+  askQuit();
 });
 app.on('will-quit', stopBridge);
 

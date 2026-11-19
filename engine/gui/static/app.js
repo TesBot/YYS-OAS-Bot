@@ -40,6 +40,8 @@
     list: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/>',
     book: '<path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2z"/><path d="M8 3v18"/>',
     play: '<circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/>',
+    pause: '<rect x="8" y="6" width="3" height="12" rx="1"/><rect x="13" y="6" width="3" height="12" rx="1"/>',
+    more: '<circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/>',
     alert: '<path d="M12 3l9 16H3z"/><path d="M12 9v5"/><circle cx="12" cy="17" r=".6"/>',
     sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
@@ -223,7 +225,8 @@
       // 执行是「每份编排一个按钮」（在左侧列表里），顶栏只留新建。
       box.append(btn('新建编排', 'plus', () => openNewFlowDrawer(), 'ghost'));
     } else if (state.view === 'runs') {
-      box.append(btn('刷新', 'refresh', () => loadRuns(true), 'ghost'));
+      box.append(btn('清空记录', 'trash', () => clearJobHistory(), 'ghost'),
+        btn('刷新', 'refresh', () => loadRuns(true), 'ghost'));
     }
   }
 
@@ -231,6 +234,40 @@
     const b = el('button', { class: 'btn' + (kind ? ' btn-' + kind : '') + (size ? ' btn-' + size : ''), html: icon(ico) + `<span>${esc(label)}</span>` });
     b.addEventListener('click', onClick);
     return b;
+  }
+
+  // 轻量下拉菜单：按钮弹出、点别处或选中后收起
+  function closeMenus() {
+    document.querySelectorAll('.menu-wrap.open').forEach((w) => {
+      w.classList.remove('open');
+      const panel = w.querySelector('.menu-panel');
+      if (panel) panel.hidden = true;
+    });
+  }
+  document.addEventListener('click', closeMenus);
+
+  function menuBtn(label, ico, items, kind) {
+    const wrap = el('div', { class: 'menu-wrap' });
+    const panel = el('div', { class: 'menu-panel', hidden: true });
+    items.forEach((it) => {
+      const row = el('button', { class: 'menu-item' + (it.danger ? ' is-danger' : ''), type: 'button',
+        html: icon(it.icon || 'cog') + `<span>${esc(it.label)}</span>` });
+      row.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeMenus();
+        it.onClick();
+      });
+      panel.appendChild(row);
+    });
+    const trigger = btn(label, ico, (ev) => {
+      ev.stopPropagation();
+      const willOpen = panel.hidden;
+      closeMenus();
+      panel.hidden = !willOpen;
+      wrap.classList.toggle('open', willOpen);
+    }, kind || 'ghost');
+    wrap.append(trigger, panel);
+    return wrap;
   }
 
   /* ---------------- 数据加载 ---------------- */
@@ -411,6 +448,7 @@
       failed: ['badge-err', '失败'], cancelled: ['badge-warn', '已取消'],
       ok: ['badge-ok', '成功'], fail: ['badge-err', '失败'], skipped: ['badge-dim', '跳过'],
       pending: ['badge-dim', '待执行'],
+      paused: ['badge-warn', '已暂停'],
     };
     const [cls, label] = map[status] || ['badge-dim', status || '—'];
     return el('span', { class: 'badge ' + cls, text: label });
@@ -834,7 +872,7 @@
     if (lp !== '仅一次') meta.push(lp);
     const idl = normalizeIdle(flow.idle);
     if (idl.enable) meta.push(`发呆 ${Math.round(idl.probability * 100)}%`);
-    if (running) meta.push(loopRound(job) || '执行中');
+    if (running) meta.push(job.paused ? '已暂停' : (loopRound(job) || '执行中'));
 
     const item = el('div', {
       class: 'fl-item' + (state.flowId === flow.id ? ' active' : '') + (running ? ' running' : ''),
@@ -873,7 +911,8 @@
     const head = el('div', { class: 'fl-detail-head' });
     head.appendChild(el('div', { class: 'fl-title' },
       el('h2', { text: flow.name }),
-      job ? el('span', { class: 'badge badge-accent', text: '执行中' }) : null,
+      job ? el('span', { class: 'badge ' + (job.paused ? 'badge-warn' : 'badge-accent'),
+                      text: job.paused ? '已暂停' : '执行中' }) : null,
       el('span', { class: 'badge ' + (flow.accounts.length > 1 ? 'badge-gold' : 'badge-dim'),
         text: flow.accounts.length > 1 ? `${flow.accounts.length} 账号联动` : '单账号' }),
       el('span', { class: 'badge badge-dim', text: `${flow.steps.length} 个任务` }),
@@ -883,16 +922,29 @@
         text: idleLabel(flow.idle) }),
     ));
     // 按钮单独一行并允许换行：编排名字长 + 7 个按钮挤在一行会溢出卡片
+    const paused = !!job && !!job.paused;
+    const pauseBtn = btn(paused ? '恢复' : '暂停', paused ? 'play' : 'pause',
+      () => toggleJobPause(job), 'ghost');
+    if (!job) {
+      // 没在跑的时候暂停没有意义，按灰了让人一眼看出不可用
+      pauseBtn.disabled = true;
+      pauseBtn.classList.add('is-disabled');
+      pauseBtn.title = '先点「执行」，跑起来之后才能暂停';
+    }
     head.appendChild(el('div', { class: 'fl-actions' },
       btn(job ? '停止执行' : '执行', job ? 'x' : 'play',
         job ? () => stopJob(job.id) : () => runFlow(flow), job ? 'danger' : 'primary'),
-      btn('随机发呆', 'moon', () => openIdleDrawer(flow), 'ghost'),
-      btn('循环设置', 'refresh', () => openLoopDrawer(flow), 'ghost'),
-      el('span', { class: 'fl-actions-sep' }),
-      btn('改绑定', 'cog', () => openFlowBindDrawer(flow), 'ghost'),
-      btn('重命名', 'sliders', () => renameFlow(flow), 'ghost'),
-      btn('存为自定义方案', 'copy', () => saveFlowAsTemplate(flow), 'ghost'),
-      btn('删除', 'trash', () => deleteFlow(flow), 'ghost fl-del'),
+      pauseBtn,
+      menuBtn('执行设置', 'sliders', [
+        { label: '随机发呆', icon: 'moon', onClick: () => openIdleDrawer(flow) },
+        { label: '循环设置', icon: 'refresh', onClick: () => openLoopDrawer(flow) },
+      ]),
+      menuBtn('其他操作', 'more', [
+        { label: '改绑定', icon: 'cog', onClick: () => openFlowBindDrawer(flow) },
+        { label: '重命名', icon: 'drag', onClick: () => renameFlow(flow) },
+        { label: '存为自定义方案', icon: 'copy', onClick: () => saveFlowAsTemplate(flow) },
+        { label: '删除', icon: 'trash', onClick: () => deleteFlow(flow), danger: true },
+      ]),
     ));
     head.appendChild(el('div', { class: 'fl-bind' },
       el('span', { class: 'small muted', text: '绑定账号' }),
@@ -905,7 +957,7 @@
       const done = job.steps.filter((s) => ['ok', 'fail', 'skipped'].includes(s.status)).length;
       const bar = el('div', { class: 'panel', style: 'margin-bottom:14px' });
       bar.appendChild(el('div', { class: 'panel-head' },
-        el('h3', {}, '正在执行 ', statusBadge(job.status)),
+        el('h3', {}, '正在执行 ', statusBadge(job.paused ? 'paused' : job.status)),
         el('div', { class: 'row' },
           el('span', { class: 'sub', text: `${loopRound(job) ? loopRound(job) + ' · ' : ''}${done}/${job.steps.length} 个任务 · ${(job.started || '').replace('T', ' ')}` }),
           btn('停止', 'x', () => stopJob(job.id), 'danger'),
@@ -1192,6 +1244,31 @@
       method: ['auto', 'wheel', 'drag'].includes(r.method) ? r.method : 'auto',
       template: typeof r.template === 'string' ? r.template : '',
       template_rect: rr,
+      miss: ccScrollMiss(r.miss),
+    };
+  }
+  // 未命中（direct 的 else 分支）：另一块可点区域，可再跳转或结束
+  function ccMiss(value) {
+    const r = (value && typeof value === 'object') ? value : {};
+    const rect = Array.isArray(r.rect) && r.rect.length === 4
+      ? r.rect.map((n) => Math.round(ccNum(n, 0))) : [];
+    return {
+      enable: !!r.enable && rect.length === 4,
+      rect,
+      delay: Math.round(ccNum(r.delay, CC_DELAY) * 10) / 10,
+      jump: Math.max(0, parseInt(r.jump, 10) || 0),
+      end: !!r.end,
+    };
+  }
+  // 滚动层没找到目标时：不处理 / 点一块区域 / 跳转 / 结束本方案
+  function ccScrollMiss(value) {
+    const r = (value && typeof value === 'object') ? value : {};
+    const rect = Array.isArray(r.rect) && r.rect.length === 4
+      ? r.rect.map((n) => Math.round(ccNum(n, 0))) : [];
+    return {
+      mode: ['none', 'click', 'jump', 'end'].includes(r.mode) ? r.mode : 'none',
+      rect,
+      jump: Math.max(0, parseInt(r.jump, 10) || 0),
     };
   }
   function newCCStep(i) {
@@ -1202,6 +1279,7 @@
       rect: [400, 250, 880, 520], score: 0.6,
       delay_before: CC_BEFORE.slice(), delay_after: [0.8, 1.2], delay: CC_DELAY,
       repeat: ccRepeat(null), jump: 0,
+      hit_enable: true, miss: ccMiss(null),
     };
   }
   function newCCPlan() {
@@ -1224,6 +1302,7 @@
         delay: Math.round(ccNum(s.delay, (after[0] + after[1]) / 2) * 10) / 10,
         texts: s.texts || [], repeat: ccRepeat(s.repeat),
         jump: Math.max(0, parseInt(s.jump, 10) || 0),
+        hit_enable: s.hit_enable !== false, miss: ccMiss(s.miss),
       });
       delete step.__image;  // 截图缓存只属于编辑期；preview 是存进方案的参考画面，要留着
       delete step.__inst;
@@ -1247,6 +1326,15 @@
           delay_after: [Math.round(d * 0.8 * 100) / 100, Math.round(d * 1.2 * 100) / 100],
           repeat: ccRepeat(s.repeat),
           jump: Math.max(0, Math.min(parseInt(s.jump, 10) || 0, draft.steps.length)),
+          hit_enable: s.hit_enable !== false,
+          miss: (() => {
+            const m = ccMiss(s.miss);
+            const md = Math.max(0, Math.min(60, m.delay));
+            return {
+              enable: m.enable, rect: m.rect, delay_after: [Math.round(md * 0.8 * 100) / 100, Math.round(md * 1.2 * 100) / 100],
+              jump: Math.max(0, Math.min(m.jump, draft.steps.length)), end: m.end,
+            };
+          })(),
         });
         delete step.__image;
         delete step.__inst;
@@ -1520,18 +1608,36 @@
       el('span', { class: 'sub', text: '按顺序执行' })), stepsBox);
 
     // 每层的大图就是选区画布：抓图后直接在图上拖框，框即点击区域（参考画面随方案保存）
-    function captureBlock(step) {
+    // kind: hit = 命中点击区域；miss = 未命中点击区域；scrollmiss = 滚动没找到时的可点区域
+    function captureBlock(step, kind = 'hit') {
+      const getRect = () => {
+        if (kind === 'miss') return (step.miss && step.miss.rect) || [];
+        if (kind === 'scrollmiss') return (step.scroll && step.scroll.miss && step.scroll.miss.rect) || [];
+        return step.rect;
+      };
+      const setRect = (r) => {
+        if (kind === 'miss') {
+          step.miss = Object.assign(ccMiss(step.miss), { rect: r, enable: true });
+          return;
+        }
+        if (kind === 'scrollmiss') {
+          step.scroll = step.scroll || {};
+          step.scroll.miss = Object.assign(ccScrollMiss(step.scroll.miss), { rect: r, mode: 'click' });
+          return;
+        }
+        step.rect = r;
+      };
       const instSel = el('select', { class: 'select' });
       insts.forEach((n) => instSel.appendChild(el('option', { value: n.name, text: n.nickname || n.name })));
       if (step.__inst || lastCapInst) instSel.value = step.__inst || lastCapInst;
       const shot = ccShot(step);
       const capNote = el('span', { class: 'small muted',
-        text: shot ? '在图上拖框选出点击区域（可重拖）' : '抓取画面后，在图上拖框选出点击区域' });
+        text: shot ? '在图上拖框（可重拖）' : '拖框选择点击位置' });
 
       const stage = el('div', { class: 'cc-stage' + (shot ? '' : ' empty') });
       const img = el('img', { class: 'cc-stage-img', src: shot, alt: '本层画面' });
       const sel = el('div', { class: 'cc-sel' });
-      const empty = el('div', { class: 'cc-stage-empty', text: '抓取本层画面后，在图上拖框选出点击区域' });
+      const empty = el('div', { class: 'cc-stage-empty', text: '拖框选择点击位置' });
       img.hidden = !shot; empty.hidden = !!shot; sel.hidden = !shot;
       stage.append(img, sel, empty);
 
@@ -1563,10 +1669,10 @@
         if (!dragging) return;
         dragging = false;
         const r = between(origin, coord(e));
-        if (r[2] - r[0] < 8 || r[3] - r[1] < 8) { put(step.rect); return; }
-        step.rect = r; put(r); capNote.textContent = '点击区域已设定';
+        if (r[2] - r[0] < 8 || r[3] - r[1] < 8) { put(getRect()); return; }
+        setRect(r); put(r); capNote.textContent = '点击区域已设定';
       });
-      put(step.rect);
+      put(getRect());
 
       const capBtn = smallBtn('抓取本层画面', 'refresh', async () => {
         if (!instSel.value) return toast('请先绑定模拟器', 'err');
@@ -1575,7 +1681,7 @@
           const src = await ccTakeShot(step, instSel.value);
           img.src = src; img.hidden = false; empty.hidden = true; sel.hidden = false;
           stage.classList.remove('empty');
-          put(step.rect);
+          put(getRect());
           capNote.textContent = '在图上拖框选出点击区域（可重拖）';
         } catch (e) { capNote.textContent = '抓取失败：' + e.message; toast('抓取失败：' + e.message, 'err'); }
         capBtn.disabled = false;
@@ -1627,6 +1733,35 @@
       lastCapInst = instName;
       try { step.preview = await ccPreview(src); } catch (e) { /* 压缩失败就不存参考画面 */ }
       return src;
+    }
+
+    // 滚动层没找到目标时：点一块区域 / 跳转 / 结束本方案
+    function scrollMissBox(step) {
+      if (!step.scroll.miss) step.scroll.miss = ccScrollMiss(null);
+      const smiss = step.scroll.miss;
+      const sel = el('select', { class: 'select' },
+        el('option', { value: 'none', text: '不处理（本层失败）' }),
+        el('option', { value: 'click', text: '点一块区域' }),
+        el('option', { value: 'jump', text: '跳转到某层' }),
+        el('option', { value: 'end', text: '结束本方案' }));
+      sel.value = smiss.mode;
+      const jumpSel = el('select', { class: 'select' });
+      jumpSel.appendChild(el('option', { value: '0', text: '继续下一层' }));
+      draft.steps.forEach((s, k) => {
+        jumpSel.appendChild(el('option', { value: String(k + 1), text: `第 ${k + 1} 层 · ${s.name || ''}` }));
+      });
+      jumpSel.value = String(smiss.jump || 0);
+      jumpSel.addEventListener('change', () => { smiss.jump = parseInt(jumpSel.value, 10) || 0; });
+      const jumpField = field('跳到', jumpSel);
+      const capBox = el('div', {});
+      sel.addEventListener('change', () => { smiss.mode = sel.value; paintSteps(); });
+      jumpField.hidden = smiss.mode !== 'jump';
+      if (smiss.mode === 'click') capBox.appendChild(captureBlock(step, 'scrollmiss'));
+      const modeField = field('没找到时', sel);
+      modeField.classList.add('cc-miss-mode');
+      return el('div', { class: 'cc-miss' },
+        el('div', { class: 'cc-miss-row' }, modeField, jumpField),
+        capBox);
     }
 
     // 滚动层 ①：框出鼠标停留区域，滚动时在这个区域里随机取落点（像人手一样）
@@ -1821,7 +1956,7 @@
 
       // 本层跑完后可跳回任意层（默认不跳转）；目标层号随层数变化自动收敛
       const jumpSel = el('select', { class: 'select' });
-      jumpSel.appendChild(el('option', { value: '0', text: '不跳转' }));
+      jumpSel.appendChild(el('option', { value: '0', text: '继续下一层' }));
       draft.steps.forEach((s, k) => {
         jumpSel.appendChild(el('option', { value: String(k + 1), text: `第 ${k + 1} 层 · ${s.name || ''}` }));
       });
@@ -1861,26 +1996,77 @@
       const body = el('div', { class: 'panel-body' }, field('动作类型', modeSel));
       if (step.mode === 'scroll') {
         body.append(
-          el('div', { class: 'cc-hint', text: '① 抓图后拖一个框，鼠标在框内随机停留；② 再拖一个框，框出要找的图案。执行时一边滚动一边找，找到就点它。' }),
+          el('div', { class: 'cc-hint', text: '① 框出滚动区域 ② 框出要找的图，滚着找，找到就点' }),
           anchorBlock(step),
           targetBlock(step),
           el('div', { class: 'cc-grid cc-grid-3' },
             field('滚动方式', scMethodSel), field('滚动方向', scDirectionSel), field('每次滚动格数', scWheelInp)),
           el('div', { class: 'cc-grid cc-grid-3' },
-            field('滚动间隔（秒）', scIntervalInp), field('目标匹配度', scScoreInp), field('寻找超时（秒）', scTimeoutInp)));
+            field('滚动间隔（秒）', scIntervalInp), field('目标匹配度', scScoreInp), field('寻找超时（秒）', scTimeoutInp)),
+          scrollMissBox(step));
       } else {
-        body.append(
-          captureBlock(step),
-          field('判定文字（每行一条 · 检测到才点击）', textTa),
+        // 两条独立配置线：命中 / 未命中 各自开关、框选、延时、下一步
+        const lineHead = (chk, title) =>
+          el('div', { class: 'cc-line-head' }, chk, el('span', { text: title }));
+
+        const hitChk = el('input', { type: 'checkbox', checked: step.hit_enable !== false });
+        hitChk.addEventListener('change', () => {
+          step.hit_enable = hitChk.checked;
+          paintSteps();
+        });
+        const hitLine = el('div', { class: 'cc-line' + (step.hit_enable !== false ? '' : ' is-off') },
+          lineHead(hitChk, '命中时'),
+          captureBlock(step, 'hit'),
+          el('div', { class: 'cc-grid cc-grid-3 cc-narrow' },
+            field('点击后延时（秒）', delayInp), field('然后', jumpSel)));
+
+        const missChk = el('input', { type: 'checkbox', checked: !!(step.miss && step.miss.enable) });
+        missChk.addEventListener('change', () => {
+          if (!step.miss) step.miss = ccMiss(null);
+          step.miss.enable = missChk.checked;
+          paintSteps();
+        });
+        const missDelay = el('input', {
+          class: 'input', type: 'number', min: '0', max: '60', step: '0.1',
+          value: String(step.miss ? step.miss.delay : CC_DELAY),
+        });
+        missDelay.addEventListener('input', () => {
+          step.miss = Object.assign(ccMiss(step.miss), {
+            delay: Math.max(0, Math.min(60, ccNum(missDelay.value, CC_DELAY))),
+          });
+        });
+        const missJump = el('select', { class: 'select' });
+        missJump.appendChild(el('option', { value: '0', text: '继续下一层' }));
+        draft.steps.forEach((s, k) => {
+          missJump.appendChild(el('option', { value: String(k + 1), text: `第 ${k + 1} 层 · ${s.name || ''}` }));
+        });
+        missJump.appendChild(el('option', { value: 'end', text: '结束方案' }));
+        if (step.miss && step.miss.end) missJump.value = 'end';
+        else missJump.value = String(step.miss && step.miss.jump ? step.miss.jump : 0);
+        missJump.addEventListener('change', () => {
+          if (missJump.value === 'end') step.miss = Object.assign(ccMiss(step.miss), { end: true, jump: 0 });
+          else step.miss = Object.assign(ccMiss(step.miss), { end: false, jump: parseInt(missJump.value, 10) || 0 });
+        });
+        const missOn = !!(step.miss && step.miss.enable);
+        const missLine = el('div', { class: 'cc-line' + (missOn ? '' : ' is-off') },
+          lineHead(missChk, '未命中时'),
+          captureBlock(step, 'miss'),
+          el('div', { class: 'cc-grid cc-grid-3 cc-narrow' },
+            field('点击后延时（秒）', missDelay), field('然后', missJump)));
+
+        body.append(hitLine, missLine,
+          field('判定文字（每行一条）', textTa),
           el('div', { class: 'cc-grid cc-grid-3' },
-            field('匹配', matchSel), field('置信度', scoreInp)));
+            field('匹配', matchSel), field('置信度', scoreInp)),
+          recheckBox);
       }
       body.append(
-        field('点击后延时（秒）', delayInp),
-        el('div', { class: 'cc-grid cc-grid-3' },
+        el('div', { class: 'cc-grid cc-grid-3 cc-narrow' },
           field('本层重复', repSel), countField, field('循环间隔（秒）', gapInp)));
-      if (step.mode !== 'scroll') body.append(recheckBox);
-      body.append(field('执行后跳转', jumpSel));
+      if (step.mode === 'scroll') {
+        body.append(el('div', { class: 'cc-grid cc-grid-3 cc-narrow' },
+          field('点击后延时（秒）', delayInp), field('执行后跳转', jumpSel)));
+      }
       card.append(head, body);
       return card;
     }
@@ -2565,6 +2751,32 @@
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
+  }
+
+  async function toggleJobPause(job) {
+    if (!job) return;
+    try {
+      await api(`/api/jobs/${job.id}/${job.paused ? 'resume' : 'pause'}`, { method: 'POST' });
+      await loadJobs();
+      render();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function clearJobHistory() {
+    const done = state.jobs.filter((j) => j.status !== 'running').length;
+    if (!done) return toast('还没有可清空的执行记录', 'err');
+    const agreed = await askConfirm({
+      title: '清空执行记录',
+      message: `要清掉 ${done} 条已结束的执行记录吗？\n正在运行的编排不会受影响。`,
+      okText: '清空', danger: true,
+    });
+    if (!agreed) return;
+    try {
+      const r = await api('/api/jobs', { method: 'DELETE' });
+      await loadJobs();
+      render();
+      toast(`已清空 ${r.removed || 0} 条记录`, 'ok');
+    } catch (e) { toast('清空失败：' + e.message, 'err'); }
   }
 
   async function stopJob(jobId) {
@@ -3347,6 +3559,18 @@
   /* ---------------- 统一确认弹窗 ---------------- */
   // 原生 confirm() 在各系统上样式又土又不可控，这里统一成本项目的卡片样式。
   // 返回 Promise<boolean>：确定 true，取消/ESC/点遮罩 false。
+  // 图片跟 app.css 同目录：Electron 里是 file://…/renderer/，
+  // bridge 托管时是 http://…/static/，两边都能找到。
+  function assetUrl(name) {
+    try {
+      const hrefs = [...document.styleSheets]
+        .map((s) => s.href || (s.ownerNode && s.ownerNode.href) || '')
+        .filter((h) => /app\.css(\?|$)/.test(h));
+      if (hrefs.length) return hrefs[hrefs.length - 1].replace(/app\.css(\?.*)?$/, '') + name;
+    } catch (e) { /* ignore */ }
+    return 'assets/' + name;
+  }
+
   function askConfirm(opts) {
     const o = opts || {};
     const title = o.title || '请确认';
@@ -3379,10 +3603,10 @@
         body.appendChild(el('div', { text: line }));
       });
       const wrap = el('div', { class: 'confirm-mask' },
-        el('div', { class: 'confirm-card', role: 'dialog', 'aria-modal': 'true' },
-          el('div', { class: 'confirm-head' },
-            el('span', { class: 'confirm-icon' + (danger ? ' is-danger' : ''), html: icon(danger ? 'trash' : 'info', 15) }),
-            el('h3', { text: title })),
+        el('div', { class: 'confirm-card' + (danger ? ' is-danger' : ''), role: 'dialog', 'aria-modal': 'true' },
+          el('div', { class: 'confirm-hero' },
+            el('img', { src: assetUrl('assets/confirm-warn.png'), alt: '', draggable: 'false' })),
+          el('div', { class: 'confirm-head' }, el('h3', { text: title })),
           body,
           el('div', { class: 'confirm-foot' }, cancelBtn, okBtn)));
       wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) finish(false); });
@@ -3465,6 +3689,18 @@
   /* ---------------- 启动 ---------------- */
   async function boot() {
     if (window.oasDesktop && window.oasDesktop.isElectron) document.body.classList.add('electron');
+    // 关窗口时由主进程发这个事件，这里用自己的弹窗确认（系统对话框样式不统一）
+    if (window.oasDesktop && window.oasDesktop.onAskQuit) {
+      window.oasDesktop.onAskQuit(async () => {
+        const ok = await askConfirm({
+          title: '退出 YYJio',
+          message: '退出后会清空这次绑定的账号，下次启动需要重新绑定模拟器。\n编排表和自定义方案会保留。',
+          okText: '退出',
+          cancelText: '取消',
+        });
+        window.oasDesktop.answerQuit(ok);
+      });
+    }
     renderNav();
     dockInitResize();
     try {

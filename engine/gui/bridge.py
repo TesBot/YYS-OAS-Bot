@@ -70,7 +70,7 @@ from gui import taskpack  # noqa: E402
 
 # ── 品牌与版本 ──
 APP_NAME = "YYJio"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_BUILD = "yyjio"
 GITHUB_REPO = "TesBot/YYS-OAS-Bot"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -1580,6 +1580,33 @@ def _cc_box_around(point: list[int], half: int = 12) -> list[int]:
     return [max(0, x - half), max(0, y - half), min(1279, x + half), min(719, y + half)]
 
 
+def _normalize_cc_miss(raw) -> dict | None:
+    """直接点击的「未命中」分支：另一块点击区域，可再跳转或结束本方案。"""
+    raw = raw if isinstance(raw, dict) else None
+    if not raw:
+        return None
+    return {
+        "enable": bool(raw.get("enable")),
+        "rect": _cc_rect(raw.get("rect")),
+        "delay_after": _cc_range(raw.get("delay_after"), (0.4, 1.2)),
+        "jump": _cc_jump(raw.get("jump")),
+        "end": bool(raw.get("end")),
+    }
+
+
+def _normalize_cc_scroll_miss(raw) -> dict:
+    """滚动层没找到目标时：none / click（点一块区域）/ jump / end。"""
+    raw = raw if isinstance(raw, dict) else {}
+    mode = raw.get("mode")
+    if mode not in ("none", "click", "jump", "end"):
+        mode = "none"
+    return {
+        "mode": mode,
+        "rect": _cc_rect(raw.get("rect")),
+        "jump": _cc_jump(raw.get("jump")),
+    }
+
+
 def _normalize_cc_scroll(raw) -> dict:
     """滚动寻找并点击的参数；字段全部有默认值，旧方案读出来也能直接用。"""
     raw = raw if isinstance(raw, dict) else {}
@@ -1607,6 +1634,7 @@ def _normalize_cc_scroll(raw) -> dict:
         "method": raw.get("method") if raw.get("method") in ("auto", "wheel", "drag") else "auto",
         "template": template,
         "template_rect": _cc_rect(rect) if rect else [],
+        "miss": _normalize_cc_scroll_miss(raw.get("miss")),
     }
 
 
@@ -1630,6 +1658,8 @@ def _normalize_cc_step(raw, index: int) -> dict:
         "delay_after": _cc_range(raw.get("delay_after"), (0.4, 1.2)),
         "repeat": _normalize_cc_repeat(raw.get("repeat")),
         "jump": _cc_jump(raw.get("jump")),
+        "hit_enable": raw.get("hit_enable") is not False,
+        "miss": _normalize_cc_miss(raw.get("miss")),
     }
 
 
@@ -1660,6 +1690,13 @@ def _normalize_cc_plan(raw) -> dict:
     for st in steps:  # 删层后目标层号可能越界，统一归零（不跳转）
         if not 1 <= st["jump"] <= len(steps):
             st["jump"] = 0
+        miss = st.get("miss")
+        if miss and not 1 <= miss["jump"] <= len(steps):
+            miss["jump"] = 0
+        smiss = (st.get("scroll") or {}).get("miss")
+        if smiss and smiss.get("mode") == "jump" and not 1 <= smiss["jump"] <= len(steps):
+            smiss["mode"] = "none"
+            smiss["jump"] = 0
     return {
         "id": raw.get("id") or f"cc{uuid.uuid4().hex[:8]}",
         "name": (raw.get("name") or "未命名方案").strip(),
@@ -2113,6 +2150,7 @@ def run_flow(flow_id: str, payload: dict | None = Body(None)):
             "flow_id": flow_id,
             "flow_name": flow["name"],
             "accounts": accounts,
+            "paused": False,
             "status": "running",
             "started": datetime.now().isoformat(timespec="seconds"),
             "finished": None,
@@ -2134,6 +2172,20 @@ def run_flow(flow_id: str, payload: dict | None = Body(None)):
     def _blank_steps() -> list[dict]:
         return [{"task": s["task"], "mode": s["mode"], "enabled": s["enabled"],
                  "status": "pending", "runs": []} for s in snapshot]
+
+    def _wait_pause() -> bool:
+        """暂停时在原地等；返回 False 表示等待期间被「停止执行」了。
+
+        暂停只在步骤之间生效：当前这一步会先跑完，避免把引擎的点击流程切半。
+        """
+        if not job.get("paused"):
+            return job["status"] != "cancelled"
+        note_backup = job.get("note")
+        job["note"] = "已暂停"
+        while job.get("paused") and job["status"] != "cancelled":
+            time.sleep(0.2)
+        job["note"] = note_backup if job["status"] != "cancelled" else None
+        return job["status"] != "cancelled"
 
     def _maybe_idle() -> None:
         """按概率静止一段时间；分片 sleep，点「停止」时能立刻退出。"""
@@ -2162,6 +2214,8 @@ def run_flow(flow_id: str, payload: dict | None = Body(None)):
         job["current"] = None
         job["error"] = None
         for idx, step in enumerate(snapshot):
+            if not _wait_pause():
+                return False, None
             if job["status"] == "cancelled":
                 return False, None
             if not step["enabled"]:
@@ -2288,6 +2342,8 @@ def run_flow(flow_id: str, payload: dict | None = Body(None)):
             job["status"] = "failed"
             job["error"] = f"{type(exc).__name__}: {exc}"
         finally:
+            if job.get("note") == "已暂停":
+                job["note"] = None  # 已经结束了就别再挂个「已暂停」
             job["finished"] = datetime.now().isoformat(timespec="seconds")
             job["current"] = None
 
@@ -2308,6 +2364,42 @@ def get_job(job_id: str):
     if job is None:
         raise HTTPException(404, "任务不存在")
     return job
+
+
+@app.post("/api/jobs/{job_id}/pause")
+def pause_job(job_id: str):
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "没有这条执行记录")
+    if job["status"] != "running":
+        raise HTTPException(409, "这条编排已经不在运行了")
+    job["paused"] = True
+    job["note"] = "已暂停"
+    return {"ok": True, "paused": True}
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def resume_job(job_id: str):
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "没有这条执行记录")
+    if job["status"] != "running":
+        raise HTTPException(409, "这条编排已经不在运行了")
+    job["paused"] = False
+    if job.get("note") == "已暂停":
+        job["note"] = None
+    return {"ok": True, "paused": False}
+
+
+@app.delete("/api/jobs")
+def clear_jobs():
+    """清空执行记录：只清已结束的，还在跑的留着。"""
+    with _JOB_LOCK:
+        keep = {k: v for k, v in _JOBS.items() if v["status"] == "running"}
+        removed = len(_JOBS) - len(keep)
+        _JOBS.clear()
+        _JOBS.update(keep)
+    return {"ok": True, "removed": removed, "left": len(keep)}
 
 
 @app.post("/api/jobs/{job_id}/stop")

@@ -157,6 +157,32 @@ def as_jump(value, total) -> int:
     return n if 1 <= n <= total else 0
 
 
+def as_miss(value) -> dict:
+    """direct 层的「未命中」动作：可点另一块区域，再跳转或结束。"""
+    raw = value if isinstance(value, dict) else {}
+    rect = raw.get("rect")
+    return {
+        "enable": bool(raw.get("enable")) and bool(rect),
+        "rect": as_rect(rect) if rect else None,
+        "after": as_range(raw.get("delay_after"), (0.4, 1.2)),
+        "jump": max(0, int(raw.get("jump") or 0)),
+        "end": bool(raw.get("end")),
+    }
+
+
+def as_scroll_miss(value) -> dict:
+    """滚动层「没找到」时的处理：不处理 / 点一块区域 / 跳转 / 结束本方案。"""
+    raw = value if isinstance(value, dict) else {}
+    mode = str(raw.get("mode") or "none")
+    if mode not in ("none", "click", "jump", "end"):
+        mode = "none"
+    rect = raw.get("rect")
+    if mode == "click" and not rect:
+        mode = "none"
+    return {"mode": mode, "rect": as_rect(rect) if rect else None,
+            "jump": max(0, int(raw.get("jump") or 0))}
+
+
 def as_idle(value) -> dict:
     """编排级「随机发呆」。由 bridge 运行时注入 plan，不写进方案库，
     因此同一份自定义点击方案在不同编排里可以配不同发呆策略。"""
@@ -394,6 +420,7 @@ def as_scroll(value) -> dict:
         "threshold": num("threshold", 0.8, 0.5, 0.99),
         "method": raw.get("method") if raw.get("method") in ("auto", "wheel", "drag") else "auto",
         "template": str(raw.get("template") or ""),
+        "miss": as_scroll_miss(raw.get("miss")),
     }
 
 
@@ -650,6 +677,9 @@ def run_plan(config_name: str, plan: dict) -> bool:
         loop_desc = "仅一次" if total == 1 else (f"{total} 轮" if total else "一直循环")
         scroll_mode = (st.get("mode") or "direct") == "scroll"
         scroll_opt = as_scroll(st.get("scroll")) if scroll_mode else {}
+        hit_on = st.get("hit_enable") is not False
+        miss = as_miss(st.get("miss")) if not scroll_mode else {"enable": False}
+        missed = {"hit": False, "index": None}
         if scroll_mode:
             area = scroll_opt["anchor_rect"]
             log(f"第 {i}/{len(steps)} 层「{name}」：滚动寻找并点击，鼠标在 "
@@ -660,7 +690,9 @@ def run_plan(config_name: str, plan: dict) -> bool:
                 f"本层 {loop_desc}，间隔 {rep['gap']:g}s")
         else:
             log(f"第 {i}/{len(steps)} 层「{name}」：等待文字 {texts or '（无条件）'} "
-                f"({match})，识别区 {roi}，点击区 {rect}，本层 {loop_desc}，间隔 {rep['gap']:g}s")
+                f"({match})，识别区 {roi}，点击区 {rect if hit_on else '（不点击）'}"
+                + (f"，未命中则点击 {miss['rect']}" if miss["enable"] and miss["rect"] else "")
+                + (f"，未击中本层 {loop_desc}，间隔 {rep['gap']:g}s"))
 
         # 滚动层不看文字，OCR 模型按需构建，避免白载一次识别器
         engine_ocr = None if scroll_mode else build_ocr(roi, score)
@@ -685,6 +717,24 @@ def run_plan(config_name: str, plan: dict) -> bool:
                 ok, why = run_scroll_search(device, scroll_opt, tag)
                 if not ok:
                     log(f"  ✗ {tag} {why}")
+                    smiss = scroll_opt.get("miss") or {"mode": "none"}
+                    if smiss["mode"] == "end":
+                        log("  ↩ 未找到目标，结束本方案")
+                        print("=== RESULT: True ===", flush=True)
+                        return True
+                    if smiss["mode"] == "click" and smiss["rect"]:
+                        x, y = random_rectangle_point(smiss["rect"])
+                        log(f"  → 未找到目标，点击备选位置 ({x}, {y})")
+                        device.click(x, y, control_check=False, control_name="CUSTOM_CLICK")
+                        device.sleep(after)
+                        missed["hit"] = True
+                        missed["index"] = index + 1
+                        break
+                    if smiss["mode"] == "jump" and 1 <= smiss["jump"] <= len(steps):
+                        log(f"  → 未找到目标，跳到第 {smiss['jump']} 层")
+                        missed["hit"] = True
+                        missed["index"] = smiss["jump"] - 1
+                        break
                     print("=== RESULT: False ===", flush=True)
                     return False
             elif rep["recheck"] or rounds == 1:
@@ -717,6 +767,23 @@ def run_plan(config_name: str, plan: dict) -> bool:
                             continue
                         log(f"  ✗ {tag} 超时未满足：{why}；最后 OCR: "
                             f"{' / '.join(last_seen[:6]) or '（一直未识别到文字）'}")
+                        if miss["enable"] and miss["end"]:
+                            log("  ↩ 未命中，结束本方案")
+                            print("=== RESULT: True ===", flush=True)
+                            return True
+                        if miss["enable"]:
+                            missed["hit"] = True
+                            missed["index"] = (miss["jump"] - 1
+                                               if 1 <= miss["jump"] <= len(steps) else index + 1)
+                            if miss["rect"]:
+                                x, y = random_rectangle_point(miss["rect"])
+                                log(f"  → 未命中，点击备选位置 ({x}, {y})")
+                                device.click(x, y, control_check=False, control_name="CUSTOM_CLICK")
+                                device.sleep(miss["after"])
+                            if cache is not None:
+                                cache.invalidate()
+                            maybe_idle(device, idle, f"{tag} 未命中后", idle_stats)
+                            break
                         print("=== RESULT: False ===", flush=True)
                         return False
                     device.sleep(poll)  # ensure_time 随机轮询间隔
@@ -731,7 +798,9 @@ def run_plan(config_name: str, plan: dict) -> bool:
                     cache.invalidate()
                     continue
 
-            if not scroll_mode:
+            if missed["hit"]:
+                break
+            if not scroll_mode and hit_on:
                 device.sleep(before)
                 x, y = random_rectangle_point(rect)  # 矩形内正态随机落点，偏中心
                 log(f"  {tag} 拟人点击 ({x}, {y})")
@@ -750,6 +819,12 @@ def run_plan(config_name: str, plan: dict) -> bool:
                 # 轮间隔同样走引擎正态随机，避免固定节拍
                 device.sleep((round(rep["gap"] * 0.8, 3), round(rep["gap"] * 1.2, 3)))
 
+        if missed["hit"]:
+            log(f"  → 第 {i} 层按未命中处理，转到第 {missed['index'] + 1} 层")
+            index = missed["index"]
+            if index >= len(steps):
+                break
+            continue
         jump = as_jump(st.get("jump"), len(steps))
         if jump:
             log(f"  ↩ 第 {i} 层结束，跳转到第 {jump} 层")

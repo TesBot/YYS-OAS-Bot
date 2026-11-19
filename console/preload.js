@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('oasDesktop', {
   files: {
     saveTaskPackage: (filename, base64) => ipcRenderer.invoke('save-task-package', filename, base64),
   },
+  // 退出确认：主进程发问，界面用自己的弹窗回答
+  onAskQuit: (cb) => ipcRenderer.on('ask-quit', () => cb()),
+  answerQuit: (ok) => ipcRenderer.send('quit-confirm', !!ok),
   // 引擎固定使用安装包内置目录，无需配置
   wizard: {
     done: () => ipcRenderer.send('wizard-done'),

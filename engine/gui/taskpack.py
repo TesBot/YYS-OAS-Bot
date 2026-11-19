@@ -110,16 +110,29 @@ def validate_plan(plan: dict) -> None:
         raise PackError(f"层级太多（{len(steps)}），最多 {MAX_STEPS} 层")
     for i, step in enumerate(steps, 1):
         if step.get("mode") == "scroll":
-            area = (step.get("scroll") or {}).get("anchor_rect")
-            if not _check_coords(area):
+            scroll = step.get("scroll") or {}
+            if not _check_coords(scroll.get("anchor_rect")):
                 raise PackError(f"第 {i} 层：鼠标停留区域不合法（必须在 1280×720 内）")
-            if not (step.get("scroll") or {}).get("template"):
+            if not scroll.get("template"):
                 raise PackError(f"第 {i} 层：滚动找图缺少目标图案")
+            miss = scroll.get("miss") or {}
+            mode = str(miss.get("mode") or "none")
+            if mode == "click" and not _check_coords(miss.get("rect")):
+                raise PackError(f"第 {i} 层：未找到时的点击区域不合法（必须在 1280×720 内）")
+            if mode == "jump" and not 1 <= int(miss.get("jump") or 0) <= len(steps):
+                raise PackError(f"第 {i} 层：未找到时的跳转层号不合法")
         else:
-            if not _check_coords(step.get("rect")):
-                raise PackError(f"第 {i} 层：点击区域不合法（必须在 1280×720 内）")
+            hit_on = step.get("hit_enable") is not False
+            miss = step.get("miss") or {}
+            miss_on = bool(miss.get("enable"))
             if not (step.get("texts") or []):
                 raise PackError(f"第 {i} 层：没有填写判定文字")
+            if miss_on and not _check_coords(miss.get("rect")):
+                raise PackError(f"第 {i} 层：未命中点击区域不合法（必须在 1280×720 内）")
+            if not hit_on and not miss_on:
+                raise PackError(f"第 {i} 层：命中与未命中都没有设置动作")
+            if hit_on and not _check_coords(step.get("rect")):
+                raise PackError(f"第 {i} 层：点击区域不合法（必须在 1280×720 内）")
 
 
 def build_package(plan: dict, info: dict) -> tuple[bytes, dict]:
