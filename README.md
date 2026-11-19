@@ -5,6 +5,7 @@
 
 
 引擎基于 [runhey/OAS](https://github.com/runhey/onmyoji_auto_script)（GPL-3.0），界面与引擎解耦。
+同时新增“自定义点击”功能，并支持在线更新，方便新版本活动的脚本执行更新同步
 
 **官网（功能演示 + 使用说明）：<https://tesbot.github.io/YYS-OAS-Bot/>**
 **下载：<https://github.com/TesBot/YYS-OAS-Bot/releases/latest>**
