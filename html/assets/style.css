@@ -257,6 +257,9 @@ details p a, .faq a { color: var(--accent); border-bottom: 1px solid rgba(184,73
 details p a:hover, .faq a:hover { border-bottom-color: var(--accent); }
 .download .ver a:hover { border-bottom-style: solid; }
 .dl-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.dl-hint { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); }
+.dl-mirror { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.dl-code { font-size: 12.5px; color: var(--muted); }
 @media (max-width: 900px) { .dl-actions { align-items: stretch; } }
 
 footer { padding: 34px 0 46px; color: var(--muted); font-size: 13px; }
