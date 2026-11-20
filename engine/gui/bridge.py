@@ -70,7 +70,7 @@ from gui import taskpack  # noqa: E402
 
 # ── 品牌与版本 ──
 APP_NAME = "YYJio"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_BUILD = "yyjio"
 GITHUB_REPO = "TesBot/YYS-OAS-Bot"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -2366,6 +2366,77 @@ def get_job(job_id: str):
     return job
 
 
+def _proc_suspend(pid: int) -> bool:
+    """把子进程冻住（Windows）。psutil 不在时退回 ntdll 的 NtSuspendProcess。"""
+    try:
+        import psutil
+        psutil.Process(pid).suspend()
+        return True
+    except Exception:  # noqa: BLE001
+        pass
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll")
+        handle = kernel32.OpenProcess(0x0800, False, int(pid))  # PROCESS_SUSPEND_RESUME
+        if not handle:
+            return False
+        try:
+            return ntdll.NtSuspendProcess(handle) == 0
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _proc_resume(pid: int) -> bool:
+    try:
+        import psutil
+        psutil.Process(pid).resume()
+        return True
+    except Exception:  # noqa: BLE001
+        pass
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll")
+        handle = kernel32.OpenProcess(0x0800, False, int(pid))
+        if not handle:
+            return False
+        try:
+            return ntdll.NtResumeProcess(handle) == 0
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _job_run_procs(job) -> list:
+    """当前这条编排所有还在跑的子进程（含已冻住的）。"""
+    procs = []
+    for step in job.get("steps") or []:
+        for rid in step.get("runs") or []:
+            run = _RUNS.get(rid)
+            proc = run.get("proc") if run else None
+            if proc is not None and proc.poll() is None:
+                procs.append(proc)
+    return procs
+
+
+def _set_procs_paused(job, paused: bool) -> int:
+    """暂停/恢复时把正在跑的子进程一起冻住/放开，改一行都不必等这一步跑完。"""
+    count = 0
+    for proc in _job_run_procs(job):
+        ok = _proc_suspend(proc.pid) if paused else _proc_resume(proc.pid)
+        if ok:
+            count += 1
+    return count
+
+
 @app.post("/api/jobs/{job_id}/pause")
 def pause_job(job_id: str):
     job = _JOBS.get(job_id)
@@ -2375,7 +2446,10 @@ def pause_job(job_id: str):
         raise HTTPException(409, "这条编排已经不在运行了")
     job["paused"] = True
     job["note"] = "已暂停"
-    return {"ok": True, "paused": True}
+    # 当前步骤如果还在跑，把子进程一并冻住；
+    # 不冻的话只能等这一步跑完才生效（长任务看不出来暂停了）。
+    frozen = _set_procs_paused(job, True)
+    return {"ok": True, "paused": True, "frozen": frozen}
 
 
 @app.post("/api/jobs/{job_id}/resume")
@@ -2388,7 +2462,8 @@ def resume_job(job_id: str):
     job["paused"] = False
     if job.get("note") == "已暂停":
         job["note"] = None
-    return {"ok": True, "paused": False}
+    thawed = _set_procs_paused(job, False)
+    return {"ok": True, "paused": False, "thawed": thawed}
 
 
 @app.delete("/api/jobs")
@@ -2410,6 +2485,8 @@ def stop_job(job_id: str):
     if job["status"] != "running":
         return {"ok": True, "status": job["status"]}
     job["status"] = "cancelled"
+    job["paused"] = False
+    job["note"] = None
     # 循环作业：本轮步骤 + 历史轮次 + 所有 batch 归属该作业的进程都要停，
     # 否则无限循环会在下一轮重新拉起 runner。
     run_ids: set[str] = set()

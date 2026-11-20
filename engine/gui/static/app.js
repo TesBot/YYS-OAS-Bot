@@ -2755,10 +2755,12 @@
 
   async function toggleJobPause(job) {
     if (!job) return;
+    const resume = !!job.paused;
     try {
-      await api(`/api/jobs/${job.id}/${job.paused ? 'resume' : 'pause'}`, { method: 'POST' });
+      await api(`/api/jobs/${job.id}/${resume ? 'resume' : 'pause'}`, { method: 'POST' });
       await loadJobs();
       render();
+      toast(resume ? '已继续' : '已暂停', 'ok');
     } catch (e) { toast(e.message, 'err'); }
   }
 

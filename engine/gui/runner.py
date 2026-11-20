@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -38,6 +40,21 @@ def resolve_task(name: str) -> str:
             if path.is_dir() and path.name.replace("_", "").lower() == target:
                 return path.name
     return name
+
+
+def attach_running_task(script, task: str) -> None:
+    """补上引擎只在调度循环里才会设置的那个 config.task。
+
+    ``Script.run(command)`` 是「直接跑这一个任务」的入口，它内部没有调用
+    ``get_next_task()``，所以 ``config.task`` 一直是 None。个别任务（比如
+    契灵之境 BondlingFairyland）在进战斗时会读 ``self.config.task.command``
+    打日志，拿不到就抛 ``AttributeError: 'NoneType' object has no attribute
+    'command'``。这里塞一个只读垫片，名字用真实任务名，时间取当前。
+    """
+    try:
+        script.config.task = SimpleNamespace(command=task, next_run=datetime.now())
+    except Exception:  # noqa: BLE001 - 垫片失败不该影响任务本身
+        pass
 
 
 def main() -> int:
@@ -72,6 +89,7 @@ def main() -> int:
         from script import Script
 
         script = Script(args.config)
+        attach_running_task(script, task)
         print(f"=== RUN {task} on config {args.config} (key: {args.task}) ===", flush=True)
         result = script.run(task)
         print(f"=== RESULT: {result} ===", flush=True)
