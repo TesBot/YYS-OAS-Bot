@@ -162,7 +162,16 @@ CUSTOM_CLICK = {
     "desc": "OCR 判定 → 框选点击 → 延时，逐层执行；自动接管战斗。",
     "team": False,
 }
-PSEUDO_TASKS = [TEAM_SETUP, CUSTOM_CLICK]
+# 「挂机等待」：不启动引擎任务，纯控制台等待。等固定时长，或等到某个时间点再继续。
+WAIT_KEY = "wait"
+WAIT = {
+    "key": WAIT_KEY,
+    "name": "挂机等待",
+    "category": "其他",
+    "desc": "等一段时间再往下走：固定时长，或等到某个时间点。",
+    "team": False,
+}
+PSEUDO_TASKS = [TEAM_SETUP, CUSTOM_CLICK, WAIT]
 
 # 编排表行内摘要优先展示的字段（按优先级取到 3 个）
 SUMMARY_KEYS = [

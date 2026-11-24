@@ -1040,7 +1040,9 @@
     row.appendChild(el('div', { class: 'step-ops' },
       el('button', { class: 'icon-btn', title: '上移', 'data-act': 'stepUp', 'data-id': step.id, html: icon('up', 13) }),
       el('button', { class: 'icon-btn', title: '下移', 'data-act': 'stepDown', 'data-id': step.id, html: icon('down', 13) }),
-      el('button', { class: 'icon-btn', title: step.task === 'custom_click' ? '编辑自定义点击方案' : '配置参数',
+      el('button', { class: 'icon-btn',
+        title: step.task === 'custom_click' ? '编辑自定义点击方案'
+          : (step.task === 'wait' ? '编辑等待' : '配置参数'),
         'data-act': step.task === 'custom_click' ? 'customClickConfig' : 'stepConfig',
         'data-id': step.id, html: icon('cog', 13) }),
       el('button', { class: 'icon-btn', title: '删除', 'data-act': 'stepDelete', 'data-id': step.id, html: icon('trash', 13) }),
@@ -1161,7 +1163,126 @@
     });
   }
 
+  /* ---------------- 挂机等待 ----------------
+     控制台伪任务：不启动引擎，按设置睡够再往下走。 */
+  function openWaitDrawer(stepId) {
+    const flow = currentFlow();
+    if (!flow) return toast('请先选择编排表', 'err');
+    const exist = stepId ? (flow.steps || []).find((s) => s.id === stepId) : null;
+    const w = Object.assign({ mode: 'duration', seconds: 300, at: '08:00' }, exist && exist.wait);
+    let mode = w.mode === 'clock' ? 'clock' : 'duration';
+
+    const numInp = el('input', { class: 'input', type: 'number', min: '1', value: String(Math.max(1, Math.round((w.seconds || 300) / 60))) });
+    const unitSel = el('select', { class: 'input' },
+      el('option', { value: '60', text: '分钟' }),
+      el('option', { value: '3600', text: '小时' }),
+      el('option', { value: '1', text: '秒' }));
+    if (w.seconds && w.seconds % 3600 === 0) unitSel.value = '3600';
+    else if (w.seconds && w.seconds % 60 !== 0) unitSel.value = '1';
+    const timeInp = el('input', { class: 'input', type: 'time', value: w.at || '08:00' });
+
+    const durBox = el('div', {}, el('div', { class: 'cc-grid cc-grid-3' },
+      field('等待时长', numInp), field('单位', unitSel)));
+    const clockBox = el('div', { class: 'cc-grid cc-grid-3 cc-narrow' }, field('等到（时间点）', timeInp));
+    const chips = el('div', { class: 'chips' });
+    const paint = () => {
+      chips.innerHTML = '';
+      [['duration', '固定时长'], ['clock', '等到时间点']].forEach(([k, label]) => {
+        const c = el('button', { class: 'chip' + (mode === k ? ' active' : ''), text: label });
+        c.addEventListener('click', () => { mode = k; paint(); });
+        chips.appendChild(c);
+      });
+      durBox.hidden = mode !== 'duration';
+      clockBox.hidden = mode !== 'clock';
+    };
+    paint();
+
+    const body = el('div', { class: 'stack' },
+      el('div', { class: 'cc-miss-row' }, chips),
+      durBox, clockBox);
+
+    openDrawer({
+      kicker: '挂机等待',
+      title: exist ? '编辑等待' : '添加等待',
+      body,
+      foot: [
+        btn('取消', 'x', closeDrawer, 'ghost'),
+        btn(exist ? '保存' : '添加', 'check', async () => {
+          const unit = Number(unitSel.value) || 60;
+          const seconds = Math.max(1, Math.round((Number(numInp.value) || 5) * unit));
+          const wait = { mode, seconds, at: timeInp.value || '08:00' };
+          const steps = (flow.steps || []).slice();
+          if (exist) {
+            const i = steps.findIndex((s) => s.id === exist.id);
+            steps[i] = Object.assign({}, steps[i], { wait });
+          } else {
+            steps.push({
+              id: 'w' + Math.random().toString(16).slice(2, 8), task: 'wait',
+              enabled: true, mode: 'solo', patch: {}, note: '', wait,
+            });
+          }
+          try {
+            await api(`/api/flows/${flow.id}`, { method: 'PUT', body: { steps } });
+            await loadFlows();
+            closeDrawer();
+            render();
+            toast(exist ? '等待已更新' : '已添加到编排', 'ok');
+          } catch (e) { toast('保存失败：' + e.message, 'err'); }
+        }, 'primary'),
+      ],
+    });
+  }
+
+  /* ---------------- 自定义方案管理 ---------------- */
+  function openTemplateManager(opts) {
+    const canAppend = !(opts && opts.append === false) && !!currentFlow();
+    const list = state.flowLib || [];
+    const body = el('div', {});
+    if (!list.length) {
+      body.appendChild(el('div', { class: 'empty' }, el('strong', { text: '还没有保存的方案' }),
+        el('p', { text: '在编排详情点「存为自定义方案」，这里就会出现。' })));
+    }
+    list.forEach((tpl) => {
+      const card = el('div', { class: 'task-card', style: 'margin-bottom:10px' },
+        el('div', { class: 'tc-top' },
+          el('span', { class: 'tc-name', text: tpl.name }),
+          el('span', { class: 'badge badge-dim', text: `${(tpl.steps || []).length} 个任务` })),
+        el('div', { class: 'tc-ops' },
+          canAppend ? btn('加到这个编排', 'plus', async () => {
+            await applyTemplateSteps(tpl, currentFlow());
+            closeModal();
+          }, 'primary sm') : null,
+          btn('删除', 'trash', async () => {
+            const agreed = await askConfirm({
+              title: '删除方案', message: `「${tpl.name}」会从方案库里移除，已经用它的编排不受影响。`,
+              okText: '删除', danger: true,
+            });
+            if (!agreed) return;
+            try {
+              await api(`/api/flow-library/${tpl.id}`, { method: 'DELETE' });
+              await loadFlowLib();
+              closeModal();
+              openTemplateManager(opts);
+              toast('方案已删除', 'ok');
+            } catch (e) { toast('删除失败：' + e.message, 'err'); }
+          }, 'danger sm')));
+      body.appendChild(card);
+    });
+    openModal({ title: '自定义方案', body, foot: [btn('关闭', 'x', closeModal, 'ghost')] });
+  }
+
+  // 挂机等待：把设置翻译成一句人话
+  const waitText = (w) => {
+    const m = w || {};
+    if (m.mode === 'clock') return `等到 ${m.at || '08:00'}`;
+    const s = Number(m.seconds) || 0;
+    if (s >= 3600 && s % 3600 === 0) return `等待 ${s / 3600} 小时`;
+    if (s >= 60 && s % 60 === 0) return `等待 ${s / 60} 分钟`;
+    return `等待 ${s} 秒`;
+  };
+
   function stepSummary(flow, step) {
+    if (step.task === 'wait') return [waitText(step.wait)];
     if (step.task === 'custom_click') {
       const p = state.customPlans.find((x) => x.id === step.plan_id);
       return p ? [`方案 ${p.name}`, `${ccPlanModes(p)} · 超时 ${p.timeout}s`]
@@ -2152,7 +2273,8 @@
         const picked = state.flowLib.find((t) => t.id === tplSelect.value);
         if (picked) nameInput.value = picked.name;
       });
-      body.appendChild(field('从自定义方案创建', tplSelect));
+      body.appendChild(field('从自定义方案创建',
+        el('div', { class: 'row' }, tplSelect, btn('管理', 'cog', () => openTemplateManager({ append: false }), 'ghost'))));
     }
 
     openDrawer({
@@ -2171,6 +2293,7 @@
               task: s.task, mode: (s.mode === 'team' || s.mode === 'duo') ? 'team' : 'solo',
               patch: s.patch || {}, note: s.note || '', enabled: s.enabled !== false,
               plan_id: s.plan_id || null, plan_name: s.plan_name || '',
+              wait: s.task === 'wait' ? (s.wait || null) : null,
             })), accounts);
           }
           try {
@@ -2948,7 +3071,8 @@
       const tasks = state.catalog.tasks.filter((t) => {
         if (t.hidden) return false;
         // 伪任务（自定义组队）在弹窗顶部有专属卡片；但任务包条目带 plan_id，要在网格里出现
-        if (t.pseudo && !t.plan_id) return false;
+        // 组队/自定义点击有独立快捷卡；挂机等待要作为普通任务出现
+        if (t.pseudo && !t.plan_id && t.key !== 'wait') return false;
         if (cat !== '全部' && t.category !== cat) return false;
         if (q && !(t.name.includes(q) || t.key.includes(q.toLowerCase()) || (t.desc || '').includes(q))) return false;
         return true;
@@ -2988,6 +3112,8 @@
               paintGrid();
             } catch (e) { toast('删除失败：' + e.message, 'err'); }
           }, 'danger sm'));
+        } else if (t.key === 'wait') {
+          ops.appendChild(btn('配置并添加', 'plus', () => { closeModal(); openWaitDrawer(null); }, 'primary sm'));
         } else {
           ops.appendChild(btn('配置并添加', 'plus', () => { closeModal(); openStepConfig(null, t.key); }, 'primary sm'));
         }
@@ -3027,6 +3153,7 @@
       task: s.task, mode: (s.mode === 'team' || s.mode === 'duo') ? 'team' : 'solo',
       patch: s.patch || {}, note: s.note || '', enabled: s.enabled !== false,
       plan_id: s.plan_id || null, plan_name: s.plan_name || '',
+      wait: s.task === 'wait' ? (s.wait || null) : null,
     })), flow.accounts);
     flow.steps = flow.steps.concat(added);
     return saveFlow(flow);
@@ -3656,7 +3783,12 @@
     runFlow: (btn) => runFlow(state.flows.find((f) => f.id === btn.dataset.id)),
     newFlow: (btn) => openNewFlowDrawer(btn.dataset.account),
     stepDelete: (btn) => stepDelete(btn.dataset.id),
-    stepConfig: (btn) => openStepConfig(btn.dataset.id),
+    stepConfig: (btn) => {
+      const flow = currentFlow();
+      const s = flow && flow.steps.find((x) => x.id === btn.dataset.id);
+      if (s && s.task === 'wait') return openWaitDrawer(s.id);
+      openStepConfig(btn.dataset.id);
+    },
     customClickConfig: (btn) => {
       const flow = currentFlow();
       const s = flow && flow.steps.find((x) => x.id === btn.dataset.id);

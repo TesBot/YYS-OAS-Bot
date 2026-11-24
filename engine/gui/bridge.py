@@ -29,7 +29,7 @@ import time
 import urllib.request
 import uuid
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +70,7 @@ from gui import taskpack  # noqa: E402
 
 # ── 品牌与版本 ──
 APP_NAME = "YYJio"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_BUILD = "yyjio"
 GITHUB_REPO = "TesBot/YYS-OAS-Bot"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -1217,6 +1217,20 @@ def _save_flows(flows: list[dict]) -> None:
                          encoding="utf-8")
 
 
+def _normalize_wait(value) -> dict:
+    """挂机等待：duration 等 seconds 秒；clock 等到 at（HH:MM，已过则顺延到第二天）。"""
+    raw = value if isinstance(value, dict) else {}
+    mode = raw.get("mode") if raw.get("mode") in ("duration", "clock") else "duration"
+    try:
+        seconds = max(1, min(int(round(float(raw.get("seconds") or 300))), 12 * 3600))
+    except (TypeError, ValueError):
+        seconds = 300
+    at = str(raw.get("at") or "").strip()
+    if not re.fullmatch(r"\d{1,2}:\d{2}", at):
+        at = "08:00"
+    return {"mode": mode, "seconds": seconds, "at": at}
+
+
 def _normalize_step(step: dict, index: int) -> dict:
     task = step.get("task")
     mode = step.get("mode") or "solo"
@@ -1239,6 +1253,7 @@ def _normalize_step(step: dict, index: int) -> dict:
         # 自定义点击是控制台伪任务：引用方案库里的一份方案，不写实例配置
         "plan_id": step.get("plan_id"),
         "plan_name": step.get("plan_name") or "",
+        "wait": _normalize_wait(step.get("wait")),
         "order": index,
     }
 
@@ -1438,6 +1453,8 @@ def _template_steps(steps: list[dict]) -> list[dict]:
         if task == catalog.CUSTOM_CLICK_KEY and s.get("plan_id"):
             entry["plan_id"] = s["plan_id"]
             entry["plan_name"] = s.get("plan_name") or ""
+        if task == catalog.WAIT_KEY:
+            entry["wait"] = _normalize_wait(s.get("wait"))
         out.append(entry)
     return out
 
@@ -2221,6 +2238,16 @@ def run_flow(flow_id: str, payload: dict | None = Body(None)):
             if not step["enabled"]:
                 job["steps"][idx]["status"] = "skipped"
                 continue
+            if step["task"] == catalog.WAIT_KEY:
+                # 等待步骤：不启动子进程，按设置睡够再往下走（暂停/停止都能立刻响应）
+                job["index"] = idx
+                job["current"] = step["task"]
+                job["steps"][idx]["status"] = "running"
+                if not _wait_step(step.get("wait") or {}):
+                    job["steps"][idx]["status"] = "cancelled"
+                    return False, None
+                job["steps"][idx]["status"] = "ok"
+                continue
             if step["task"] == catalog.TEAM_SETUP_KEY:
                 # 组队步骤不启动进程，只登记队伍名单供后续步骤使用
                 team = step.get("team") or {}
@@ -2291,6 +2318,38 @@ def run_flow(flow_id: str, payload: dict | None = Body(None)):
             if not ok:
                 return False, f"第 {round_no} 轮 · 步骤 {idx + 1} 执行失败"
         return True, None
+
+    def _wait_step(wait: dict) -> bool:
+        """按挂机等待设置睡够；暂停时停表，停止时立刻返回 False。"""
+        mode = wait.get("mode")
+        if mode == "clock":
+            at = str(wait.get("at") or "08:00")
+            try:
+                hour, minute = (int(x) for x in at.split(":", 1))
+                target = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+            except (TypeError, ValueError):
+                target = datetime.now()
+            if target <= datetime.now():
+                target = target + timedelta(days=1)
+            remaining = max(1.0, (target - datetime.now()).total_seconds())
+            label = f"等到 {at}"
+        else:
+            remaining = float(wait.get("seconds") or 300)
+            label = "等待中"
+        total = remaining
+        while remaining > 0:
+            if job["status"] == "cancelled":
+                return False
+            if job.get("paused"):
+                job["note"] = "已暂停"
+                time.sleep(0.2)
+                continue
+            job["note"] = f"{label} · 还剩 {int(remaining / 60)} 分" if remaining >= 60 else f"{label} · 还剩 {int(remaining)} 秒"
+            chunk = min(1.0, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
+        job["note"] = None
+        return job["status"] != "cancelled"
 
     def _wait_interval(seconds: int) -> None:
         # 半秒一跳，用户点停止时能立刻退出等待
