@@ -302,7 +302,14 @@ body.electron .app { height: calc(100vh - 40px); }
 }
 .acct:hover { border-color: var(--line-2); box-shadow: 0 2px 10px rgba(36,33,29,.06); }
 .acct-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.acct-row-meta { font-size: 11.5px; flex-wrap: wrap; gap: 5px 7px; }
+.acct-row-meta { font-size: 11.5px; flex-wrap: nowrap; gap: 5px 7px; }
+/* 跑任务时多出「执行中 + 在跑什么」，这一行不换行：中间文字自己省略，右边下拉钉住 */
+.acct-row-meta .badge, .acct-row-meta .acct-shot-label, .acct-row-meta .shot-sel { flex: none; }
+.acct-meta-main { display: flex; align-items: center; gap: 5px 7px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.acct-meta-main > * { white-space: nowrap; }
+.acct-meta-main .acct-act-text { flex: 0 1 auto; max-width: 40%; }
+.acct-shot-label { white-space: nowrap; }
+.shot-sel { max-width: 138px; text-overflow: ellipsis; }
 .avatar {
   width: 28px; height: 28px; border-radius: 8px; flex: none;
   display: flex; align-items: center; justify-content: center;
@@ -319,6 +326,16 @@ body.electron .app { height: calc(100vh - 40px); }
 .acct-conn { font-size: 11.5px; flex: none; }
 .acct-conn.is-on { color: var(--ok); }
 .acct-conn.is-off { color: var(--err); }
+
+/* 读取游戏界面方式：账号卡第二行末尾的小下拉，不改变卡片高度 */
+.shot-sel { height: 18px; padding: 0 18px 0 8px; font-size: 11.5px; line-height: 16px;
+  color: var(--text-2); background: var(--panel-3) no-repeat right 5px center;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Cpath d='M2 4l3 3 3-3' fill='none' stroke='%2394887a' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  border: 1px solid var(--line); border-radius: 9px; outline: none; cursor: pointer;
+  appearance: none; -webkit-appearance: none; transition: border-color .15s, color .15s; }
+.shot-sel:hover { color: var(--text); border-color: var(--line-2); }
+.shot-sel:focus { border-color: var(--accent); }
+.acct-shot-label { font-size: 11.5px; color: var(--text-3); margin-left: 8px; }
 .acct-conn.is-busy { color: var(--accent); }
 .acct-name { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-server { font-size: 11.5px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

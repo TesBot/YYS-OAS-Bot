@@ -104,6 +104,27 @@ def get_ocr():
     return _ENGINE_OCR
 
 
+def _orientations(image):
+    """把截图统一成 1280x720：竖屏帧转 90°，奇怪尺寸按比例塞进去补边。"""
+    h, w = image.shape[:2]
+    if (w, h) == SCREEN:
+        yield "as-is", image
+        return
+    if (h, w) == SCREEN:
+        yield "rot90", cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        yield "rot270", cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return
+    scale = min(SCREEN[0] / w, SCREEN[1] / h)
+    resized = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+    channels = 3 if resized.ndim == 2 else resized.shape[2]
+    canvas = np.zeros((SCREEN[1], SCREEN[0], channels), np.uint8)
+    top = (SCREEN[1] - resized.shape[0]) // 2
+    left = (SCREEN[0] - resized.shape[1]) // 2
+    canvas[top:top + resized.shape[0], left:left + resized.shape[1]] = resized
+    yield "letterbox", canvas
+
+
 def scan(config_name: str, out_avatar: str) -> dict:
     """抓一帧、认昵称、裁头像，返回结果 dict（不打印）。"""
     try:
@@ -118,15 +139,26 @@ def scan(config_name: str, out_avatar: str) -> dict:
     if image is None or not getattr(image, "size", 0):
         return {"ok": False, "error": "截图失败：没有拿到画面"}
 
-    if (image.shape[1], image.shape[0]) != SCREEN:
-        image = cv2.resize(image, SCREEN, interpolation=cv2.INTER_AREA)
+    shot = {"w": int(image.shape[1]), "h": int(image.shape[0])}
+    # 有的机器 screencap 给的是竖屏帧（720x1280），硬拉成 1280x720 会把名字条压扁，
+    # 这里改为旋转后重试，取能认出昵称的那个方向。
+    best = None
+    for name, frame in _orientations(image):
+        try:
+            texts = ocr_texts(device, get_ocr(), NAME_ROI, image=frame)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"识别失败：{exc}"}
+        nickname = pick_nickname(texts)
+        if best is None:
+            best = {"orientation": name, "frame": frame, "texts": texts, "nickname": nickname}
+        if nickname:
+            best = {"orientation": name, "frame": frame, "texts": texts, "nickname": nickname}
+            break
 
-    try:
-        texts = ocr_texts(device, get_ocr(), NAME_ROI, image=image)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"识别失败：{exc}"}
-
-    nickname = pick_nickname(texts)
+    image = best["frame"]
+    texts = best["texts"]
+    nickname = best["nickname"]
+    shot["orientation"] = best["orientation"]
 
     avatar_path = Path(out_avatar)
     avatar_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,13 +167,17 @@ def scan(config_name: str, out_avatar: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"头像保存失败：{exc}"}
 
-    return {
-        "ok": True,
+    result = {
+        "ok": bool(nickname),
         "nickname": nickname,
         "avatar": avatar_path.name,
+        "shot": shot,
         "texts": [{"text": t.get("text"), "score": round(float(t.get("score") or 0), 3)}
                   for t in texts],
     }
+    if not nickname:
+        result["error"] = f"没认出昵称（画面 {shot['w']}x{shot['h']}，已按 {shot['orientation']} 处理）"
+    return result
 
 
 def serve() -> int:

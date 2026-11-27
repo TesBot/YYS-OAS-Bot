@@ -37,13 +37,20 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+_GUI_DIR = str(Path(__file__).resolve().parent)
+if _GUI_DIR not in sys.path:  # 直接跑 gui/bridge.py 时脚本目录不一定在 sys.path
+    sys.path.insert(0, _GUI_DIR)
+import minitouch_setup  # noqa: E402  （随安装包带的 minitouch 兜底）
 ROOT = Path(__file__).resolve().parent.parent
+
 CONFIG_DIR = ROOT / "config"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLAN_FILE = CONFIG_DIR / "plans.json"
 FLOW_FILE = CONFIG_DIR / "gui_flows.json"
 FLOW_LIBRARY_FILE = CONFIG_DIR / "gui_flow_library.json"
 PROFILE_FILE = CONFIG_DIR / "gui_profiles.json"
+# 每台模拟器用过的「操作模拟器方式」：换绑/重建实例时按 serial 还原
+DEVICE_MODE_FILE = CONFIG_DIR / "gui_device_mode.json"
 # 账号头像：绑定账号时从游戏画面里裁下来的圆形头像，按实例名存一份
 AVATAR_DIR = CONFIG_DIR / "gui_avatars"
 CUSTOM_CLICK_FILE = CONFIG_DIR / "gui_custom_clicks.json"
@@ -70,7 +77,7 @@ from gui import taskpack  # noqa: E402
 
 # ── 品牌与版本 ──
 APP_NAME = "YYJio"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 APP_BUILD = "yyjio"
 GITHUB_REPO = "TesBot/YYS-OAS-Bot"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -178,7 +185,8 @@ def _instance_path(name: str) -> Path:
 def _load(path: Path) -> dict:
     with _CONFIG_LOCK:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            # utf-8-sig：有的编辑器/脚本会写 BOM，严格 utf-8 会直接报错
+            return json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"配置解析失败 {path.name}: {exc}") from exc
 
@@ -506,6 +514,27 @@ def _save_profiles(data: dict) -> None:
 
 
 @app.get("/api/profiles")
+
+def _load_device_modes() -> dict:
+    data = _load(DEVICE_MODE_FILE) if DEVICE_MODE_FILE.exists() else {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_device_modes(data: dict) -> None:
+    _save(DEVICE_MODE_FILE, data)
+
+
+def _remember_device_mode(device: dict) -> None:
+    """记住这台模拟器选的方式，解绑后重新绑定同一个 serial 时还原。"""
+    serial = str(device.get("serial") or "")
+    shot = device.get("screenshot_method")
+    ctrl = device.get("control_method")
+    if not serial or not shot or not ctrl:
+        return
+    modes = _load_device_modes()
+    modes[serial] = {"screenshot_method": shot, "control_method": ctrl}
+    _save_device_modes(modes)
+
 def list_profiles():
     return {"profiles": _load_profiles()}
 
@@ -664,7 +693,8 @@ def scan_profile(name: str):
     current["avatar"] = str(data.get("avatar") or "")
     profiles[name] = current
     _save_profiles(profiles)
-    return {"ok": True, "profile": current, "texts": data.get("texts") or []}
+    return {"ok": True, "profile": current, "shot": data.get("shot") or {},
+            "texts": data.get("texts") or []}
 
 
 @app.get("/api/instances/{name}/avatar")
@@ -984,6 +1014,18 @@ def create_instance(payload: dict = Body(...)):
     template["config_name"] = name
     device = template.setdefault("script", {}).setdefault("device", {})
     device["serial"] = serial
+    # 截图与操作方式默认跟着引擎走（auto 测速 + minitouch）。
+    # 这台模拟器以前改过（例如改成 ADB），重新绑定时按 serial 还原，不会被重置回默认。
+    # 个别电脑上默认方案会抓错画面或起不来，那时在总览里把「操作模拟器方式」改成 ADB。
+    saved_mode = _load_device_modes().get(str(serial)) or {}
+    # 引擎默认先跑一次「截图测速」，把最快的方式写死进实例配置：个别电脑上会选中
+    # 窗口/IPC 抓屏，抓到的却是模拟器桌面。默认 ADB 截图 + ADB 操作，最稳。
+    device.setdefault("screenshot_method", "auto")
+    device["control_method"] = "minitouch"
+    if saved_mode.get("screenshot_method"):
+        device["screenshot_method"] = saved_mode["screenshot_method"]
+    if saved_mode.get("control_method"):
+        device["control_method"] = saved_mode["control_method"]
     for key, value in (payload.get("device") or {}).items():
         device[key] = value
     _save(target, template)
@@ -995,8 +1037,11 @@ def update_instance(name: str, payload: dict = Body(...)):
     path = _instance_path(name)
     cfg = _load(path)
     device = cfg.setdefault("script", {}).setdefault("device", {})
-    for key, value in (payload.get("device") or {}).items():
+    changed = payload.get("device") or {}
+    for key, value in changed.items():
         device[key] = value
+    if "screenshot_method" in changed or "control_method" in changed:
+        _remember_device_mode(device)
     costume = payload.get("costume_main_type")
     if isinstance(costume, list):  # 兼容旧前端传来的候选列表，取首个
         costume = costume[0] if costume else None
@@ -2614,9 +2659,64 @@ def _align_hyakkiyakou_device(instance: str) -> None:
         _save(path, cfg)
 
 
+def _repair_device_enums() -> None:
+    """老版本把 control_method 写成 "ADB"，pydantic 会拒绝整个实例配置。
+
+    启动时扫一遍 config/*.json，把这两个字段折回引擎认的写法。
+    """
+    shot_ok = {"auto", "ADB", "ADB_nc", "uiautomator2", "DroidCast", "DroidCast_raw",
+               "scrcpy", "window_background", "nemu_ipc"}
+    ctrl_ok = {"adb", "uiautomator2", "minitouch", "window_message"}
+    shot_map = {s.lower(): s for s in shot_ok}
+    ctrl_map = {c.lower(): c for c in ctrl_ok}
+    for path in CONFIG_DIR.glob("*.json"):
+        if path.name.startswith("gui_") or path.name in ("template.json", "plans.json"):
+            continue
+        try:
+            cfg = _load(path)
+            device = ((cfg or {}).get("script") or {}).get("device")
+            if not isinstance(device, dict):
+                continue
+            changed = False
+            for key, allowed, mapping in (("screenshot_method", shot_ok, shot_map),
+                                          ("control_method", ctrl_ok, ctrl_map)):
+                cur = device.get(key)
+                if not isinstance(cur, str) or cur in allowed:
+                    continue
+                fixed = mapping.get(cur.lower())
+                if fixed and fixed != cur:
+                    device[key] = fixed
+                    changed = True
+            if device.get("control_method") != "minitouch":
+                # 操作方式固定 minitouch；上一版改成 adb 的实例这里改回来
+                device["control_method"] = "minitouch"
+                changed = True
+            if changed:
+                _save(path, cfg)
+        except Exception:  # noqa: BLE001 - 坏文件留给引擎自己报
+            continue
+
+
+def _ensure_minitouch(instance: str) -> None:
+    """操作方式固定用 minitouch：起任务前确保设备上有二进制、进程在跑。"""
+    try:
+        path = _instance_path(instance)
+        cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+        device = (cfg.get("script") or {}).get("device") or {}
+        serial = str(device.get("serial") or "")
+        if not serial:
+            return
+        state = minitouch_setup.ensure(serial)
+        if not state.get("running"):
+            print(f"[minitouch] {instance} ({serial}) 未能启动：{state}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - 兜底失败不该拦住任务
+        print(f"[minitouch] 准备失败：{exc}", flush=True)
+
+
 def _spawn_run(instance: str, task: str, force_fight: bool, batch: str | None = None,
                plan: dict | None = None) -> str:
     _instance_path(instance)
+    _ensure_minitouch(instance)
     if (task or "").lower() == "hyakkiyakou":
         _align_hyakkiyakou_device(instance)
     run_id = uuid.uuid4().hex[:10]
@@ -2852,6 +2952,9 @@ def main() -> None:
     args = parser.parse_args()
     import uvicorn
     _start_server_daemon()
+    # 先把老版本写坏的控制方式/截图方式折回引擎认的写法，再预热
+    _repair_device_enums()
+    minitouch_setup.seed_cache()
     threading.Thread(target=_warm_scan_worker, name="warm-profile-scan", daemon=True).start()
     print(f"{APP_NAME} bridge → http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

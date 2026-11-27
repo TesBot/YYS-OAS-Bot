@@ -480,6 +480,55 @@
     return box;
   }
 
+  const SHOT_OPTIONS = [
+    { value: 'auto', label: '自动' },
+    { value: 'ADB', label: '优先 ADB' },
+  ];
+
+  // 默认就是引擎原本那套（截图测速 + minitouch）。
+  // 个别电脑上默认方案抓不到游戏画面、脚本也起不来，那时换成 ADB。
+  // 两种方式都走 minitouch 操作，只换「怎么读画面」
+  const DEVICE_MODES = [
+    { value: 'auto', label: '自动', shot: 'auto' },
+    { value: 'adb', label: 'ADB', shot: 'ADB' },
+  ];
+
+  /** 读取游戏画面用哪种方式：操作固定走 minitouch，只换截图方式。 */
+  function deviceModePicker(inst) {
+    // 引擎里截图是 "ADB"、控制是 "adb"，大小写不同，别写成一个
+    const shot = inst.screenshot_method || 'ADB';
+    const cur = shot === 'auto' ? 'auto' : 'adb';
+    const sel = el('select', { class: 'shot-sel', title: '读取游戏界面方式（操作固定走 minitouch）' });
+    DEVICE_MODES.forEach((o) => sel.appendChild(el('option', { value: o.value, text: o.label })));
+    sel.value = cur;
+    sel.addEventListener('change', async () => {
+      const pick = sel.value;
+      const mode = DEVICE_MODES.find((m) => m.value === pick) || DEVICE_MODES[0];
+      const patch = { screenshot_method: mode.shot, control_method: 'minitouch' };
+      const label = (DEVICE_MODES.find((o) => o.value === pick) || {}).label || pick;
+      try {
+        await api(`/api/instances/${encodeURIComponent(inst.name)}`, { method: 'PATCH', body: { device: patch } });
+        // 改完立刻按新方式重连一次：重新抓图认昵称，认出来就说明这条路通了
+        markBusy(inst.name, '识别中');
+        await loadInstances();
+        render();
+        let res = {};
+        try {
+          res = await api(`/api/instances/${encodeURIComponent(inst.name)}/profile-scan`, { method: 'POST' });
+        } catch (e) {
+          res = { ok: false, error: e.message };
+        } finally {
+          clearBusy(inst.name);
+        }
+        await loadInstances();
+        render();
+        if (res.ok && res.nickname) toast(`已改为「${label}」，识别到：${res.nickname}`, 'ok');
+        else toast(`已改为「${label}」，但没识别出来：${res.error || '未知原因'}`, 'err');
+      } catch (e) { toast('保存失败：' + e.message, 'err'); }
+    });
+    return sel;
+  }
+
   function accountCard(inst) {
     // 紧凑两行：第一行是谁（昵称/区服）+ 两个动作，第二行在哪（模拟器 ID/分辨率/在跑什么）。
     // 「编排表」归编排页管，卡片上不再重复；「测试连接」由刷新设备覆盖，也不再占位。
@@ -513,16 +562,22 @@
     const dotClass = busy ? 'dot-busy' : (inst.online && !errText ? 'dot-ok' : 'dot-err');
     const dotTitle = busy ? busyLabel : (errText || (inst.online ? '模拟器已连接' : '模拟器未连接'));
 
+    // 左边状态挤在一格里（超了就省略），右边的下拉钉在卡片右侧：
+    // 跑任务时多出「执行中 + 在跑什么」，这一行也不会被挤散
     card.appendChild(el('div', { class: 'acct-row acct-row-meta' },
-      el('span', { class: 'dot ' + dotClass, title: dotTitle }),
-      el('span', { class: 'acct-conn ' + connClass, title: errText, text: connText }),
-      el('span', { class: 'acct-serial', title: serial, text: serial }),
-      !busy && device && device.resolution
-        ? el('span', { class: 'muted', text: '· ' + device.resolution }) : null,
-      !busy && !device ? el('span', { class: 'muted', text: '· 未扫描到' }) : null,
-      act.tone === 'run' ? el('span', { class: 'badge badge-accent', text: '执行中' }) : null,
-      act.tone === 'run' && act.detail
-        ? el('span', { class: 'acct-act-text muted', title: act.detail, text: act.detail }) : null,
+      el('div', { class: 'acct-meta-main' },
+        el('span', { class: 'dot ' + dotClass, title: dotTitle }),
+        el('span', { class: 'acct-conn ' + connClass, title: errText, text: connText }),
+        el('span', { class: 'acct-serial', title: serial, text: serial }),
+        !busy && device && device.resolution
+          ? el('span', { class: 'muted', text: '· ' + device.resolution }) : null,
+        !busy && !device ? el('span', { class: 'muted', text: '· 未扫描到' }) : null,
+        act.tone === 'run' ? el('span', { class: 'badge badge-accent', text: '执行中' }) : null,
+        act.tone === 'run' && act.detail
+          ? el('span', { class: 'acct-act-text muted', title: act.detail, text: act.detail }) : null,
+      ),
+      el('span', { class: 'acct-shot-label', text: '读取游戏界面方式：' }),
+      deviceModePicker(inst),
     ));
     return card;
   }
