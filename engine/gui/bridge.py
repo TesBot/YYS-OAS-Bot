@@ -416,7 +416,18 @@ def _probe_device(serial: str) -> dict:
     }
 
 
-def _device_detail(serials: list[str]) -> list[dict]:
+def _probe_identity(serial: str) -> str:
+    """只读 boot_id：已绑定设备只需要这个来做别名合并，不必再问型号/分辨率。"""
+    try:
+        out = subprocess.run([str(ADB), "-s", serial, "shell",
+                              "cat /proc/sys/kernel/random/boot_id"],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:  # noqa: BLE001
+        return ""
+    return (out.stdout or "").strip()
+
+
+def _device_detail(serials: list[str], light: set[str] | None = None) -> list[dict]:
     """把 serial 列表补全为带型号/分辨率、且标注已绑定实例的设备详情。
 
     adb 会把同一台实例以多个传输名重复列出，这里按 boot_id 合并成一行：
@@ -430,9 +441,11 @@ def _device_detail(serials: list[str]) -> list[dict]:
         if serial:
             bound[serial] = path.stem
 
+    light = light or set()
     groups: dict[str, list[dict]] = {}
     for serial in serials:
-        info = _probe_device(serial)
+        # 已绑定的账号只查身份（boot_id），型号/分辨率卡片上已经有了
+        info = {"boot_id": _probe_identity(serial)} if serial in light else _probe_device(serial)
         identity = info.get("boot_id") or info.get("serialno") or serial
         groups.setdefault(identity, []).append({
             "serial": serial,
@@ -464,7 +477,7 @@ def _device_detail(serials: list[str]) -> list[dict]:
 
 
 @app.get("/api/devices")
-def list_devices(probe: bool = False):
+def list_devices(probe: bool = False, skip: str = ""):
     """实时扫描 adb 在线设备，供「账号绑定」选择。
 
     模拟器重启后 adb 连接常常是掉的（devices 为空），此时先按已知
@@ -472,15 +485,43 @@ def list_devices(probe: bool = False):
 
     ``probe=1``：不论当前列表是否为空，都先做一轮主动 connect。用户点了
     「刷新设备」就传这个，因为新开的 MuMu 实例不会自动注册到 adb server。
+
+    ``skip``：逗号分隔的 serial，这些设备已经绑定好了，只返回名字不再逐台
+    probe（型号/分辨率要跑三条 shell，绑着的号没必要每次都问一遍）。账号卡
+    各自的「刷新状态」会单独查那一台。
     """
+    known = {s.strip() for s in skip.split(",") if s.strip()}
     if probe:
         _adb_reconnect_known(set(_adb_devices()))
     devices = _adb_devices()
     if not devices:
         _adb_reconnect_known()
         devices = _adb_devices()
-    detail = _device_detail(devices)
-    return {"devices": detail, "count": len(detail)}
+    detail = _device_detail(devices, light=known)
+    # 已绑定的那几台标成 cached：前端据此只统计「新设备」，也不再让它们
+    # 在未绑定列表里重复出现（同一台模拟器常有 emulator-xxxx 与 TCP 两个名字，
+    # 只有拿到 boot_id 才能合并，所以这里仍然读一次身份）。
+    for one in detail:
+        names = {one.get("serial"), *(one.get("aliases") or [])}
+        if names & known:
+            one["cached"] = True
+    return {"devices": detail, "count": len(detail), "skipped": sorted(known)}
+
+
+@app.get("/api/instances/{name}/status")
+def instance_status(name: str):
+    """只查这一台：连上了没 / 型号 / 分辨率。账号卡上的「刷新状态」用。"""
+    path = CONFIG_DIR / f"{name}.json"
+    if not path.exists():
+        raise HTTPException(404, "没有这个账号")
+    serial = ((_load(path).get("script") or {}).get("device") or {}).get("serial")
+    if not serial:
+        raise HTTPException(400, "这个账号还没有绑定模拟器")
+    online = serial in set(_adb_devices())
+    info = _probe_device(serial) if online else {}
+    return {"ok": True, "online": online, "serial": serial,
+            "model": info.get("model") or None, "resolution": info.get("resolution") or "",
+            "density": info.get("density")}
 
 
 @app.post("/api/devices/connect")
@@ -558,6 +599,14 @@ def delete_profile(name: str):
     _save_profiles(profiles)
     return {"ok": True}
 
+
+
+def _avatar_stamp(name: str) -> int:
+    """头像文件的修改时间，前端拼在 URL 后面当版本号，避免沿用旧图。"""
+    try:
+        return int(_avatar_path(name).stat().st_mtime)
+    except OSError:
+        return 0
 
 def _avatar_path(name: str) -> Path:
     return AVATAR_DIR / f"{name}.png"
@@ -676,6 +725,8 @@ def scan_profile(name: str):
     """
     _instance_path(name)
     out = _avatar_path(name)
+    # 先删旧的：这次认不出来就回退到首字母，不能继续显示上一次那张脸
+    out.unlink(missing_ok=True)
     try:
         data = _scan_worker_call({"config": name, "out_avatar": str(out)})
     except HTTPException:
@@ -703,8 +754,13 @@ def instance_avatar(name: str):
     path = _avatar_path(name)
     if not path.exists():
         raise HTTPException(404, "还没有头像")
+    try:
+        stamp = str(int(path.stat().st_mtime))
+    except OSError:
+        stamp = "0"
     return FileResponse(path, media_type="image/png",
-                        headers={"Cache-Control": "no-cache, max-age=0"})
+                        headers={"Cache-Control": "no-store, max-age=0",
+                                 "ETag": f'"{stamp}"'})
 
 
 # ────────────────────────── 任务表单 schema ──────────────────────────
@@ -976,6 +1032,7 @@ def list_instances():
             "server": profile.get("server") or "",
             "role_id": profile.get("role_id") or "",
             "avatar": profile.get("avatar") or "",
+            "avatar_at": _avatar_stamp(path.stem),
             "primary": bool(profile.get("primary")),
             "note": profile.get("note") or "",
             "serial": serial,

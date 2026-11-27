@@ -104,6 +104,7 @@
     flowId: null,
     jobId: null,
     accountsDirty: false,
+    scanning: false,
     flowsSignature: '',
     busy: {}, // 账号名 → 临时状态（识别中/连接中），连接点闪烁用
     busyErr: {}, // 账号名 → 上一次识别/连接失败的原因，成功或重新识别时清掉
@@ -115,6 +116,12 @@
     return inst ? inst.nickname || inst.name : name;
   };
   const instOf = (name) => state.instances.find((i) => i.name === name) || null;
+  // 昵称可能重名（两个号昵称一模一样），选账号时把实例名一起带上才分得清
+  const acctLabel = (inst) => {
+    if (!inst) return '';
+    const nick = (inst.nickname || '').trim();
+    return nick && nick !== inst.name ? `${nick}（${inst.name}）` : inst.name;
+  };
   const currentFlow = () => state.flows.find((f) => f.id === state.flowId) || null;
 
   /* ---------------- 编排循环 ----------------
@@ -217,10 +224,10 @@
   function renderTopActions() {
     const box = $('#topActions');
     if (state.view === 'overview') {
-      box.append(
-        btn('刷新设备', 'refresh', () => loadDevices(true), 'primary'),
-        btn('绑定新账号', 'plus', openBindDrawer, 'ghost'),
-      );
+      const refresh = btn(state.scanning ? '扫描中…' : '刷新设备', 'refresh',
+        () => { if (!state.scanning) loadDevices(true); }, 'primary');
+      if (state.scanning) refresh.disabled = true;
+      box.append(refresh, btn('绑定新账号', 'plus', openBindDrawer, 'ghost'));
     } else if (state.view === 'flows') {
       // 执行是「每份编排一个按钮」（在左侧列表里），顶栏只留新建。
       box.append(btn('新建编排', 'plus', () => openNewFlowDrawer(), 'ghost'));
@@ -287,17 +294,34 @@
       // 用户点「刷新设备」时带上 probe，让 bridge 主动 connect 一遍已知端口
       // （新开的模拟器实例不会自己注册到 adb server）。
       if (notify) {
-        // 扫描/重连期间账号卡的连接点闪烁，让用户知道「正在连」
-        state.instances.forEach((inst) => markBusy(inst.name, '连接中'));
+        // 只在顶栏按钮上显示进度：已绑定的账号本来就连着，不该因为扫新设备
+        // 被标成「连接中」，用户会以为它又被重连了一遍。
+        state.scanning = true;
         if (state.view === 'overview') render();
       }
-      const data = await api('/api/devices' + (notify ? '?probe=1' : ''));
-      state.devices = data.devices || [];
-      if (notify) toast(`扫描完成，在线设备 ${state.devices.length} 台`, state.devices.length ? 'ok' : 'err');
+      // 已经绑好的设备不再逐台扫（型号/分辨率要跑好几条 shell）：只找新设备，
+      // 单台的连接状态交给账号卡上的「刷新状态」。
+      const skip = notify
+        ? state.instances.map((i) => i.serial).filter(Boolean).join(',')
+        : '';
+      const data = await api('/api/devices'
+        + (notify ? `?probe=1&skip=${encodeURIComponent(skip)}` : ''));
+      const prev = state.devices || [];
+      state.devices = (data.devices || []).map((d) => {
+        if (!d.cached) return d;
+        // 跳过的那几台沿用上次记下的型号/分辨率，卡片上的文字不会突然变空
+        const old = prev.find((x) => x.serial === d.serial);
+        return old ? Object.assign({}, old, { cached: true }) : d;
+      });
+      if (notify) {
+        const fresh = state.devices.filter((d) => !d.cached);
+        toast(fresh.length ? `扫到 ${fresh.length} 台未绑定设备` : '没有发现新的模拟器',
+          fresh.length ? 'ok' : 'err');
+      }
     } catch (e) { if (notify) toast('扫描失败：' + e.message, 'err'); }
     finally {
       if (notify) {
-        state.instances.forEach((inst) => clearBusy(inst.name));
+        state.scanning = false;
         await loadInstances().catch(() => {});
         // 设备这次扫到了、账号也在线的，把之前「识别失败」的标记清掉
         state.instances.forEach((inst) => {
@@ -470,7 +494,7 @@
     const initial = (inst.nickname || inst.name).slice(0, 1).toUpperCase();
     const box = el('span', { class: 'avatar' + (inst.primary ? '' : ' sub') });
     if (inst.avatar) {
-      const img = el('img', { class: 'avatar-photo', alt: '', src: `/api/instances/${encodeURIComponent(inst.name)}/avatar` });
+      const img = el('img', { class: 'avatar-photo', alt: '', src: `/api/instances/${encodeURIComponent(inst.name)}/avatar?v=${inst.avatar_at || 0}` });
       img.addEventListener('error', () => { img.remove(); box.textContent = initial; });
       box.classList.add('avatar-photo-box');
       box.appendChild(img);
@@ -529,6 +553,31 @@
     return sel;
   }
 
+  /** 只查这一台：连上了没、型号、分辨率。别的账号不受影响。 */
+  async function refreshAccountStatus(inst) {
+    markBusy(inst.name, '刷新中');
+    render();
+    try {
+      const r = await api(`/api/instances/${encodeURIComponent(inst.name)}/status`);
+      const prev = (state.devices || []).find((d) => d.serial === inst.serial) || {};
+      const rest = (state.devices || []).filter((d) => d.serial !== inst.serial);
+      // 保留 bound_to/aliases：否则这台会掉回「未绑定的模拟器」列表里
+      state.devices = r.online
+        ? rest.concat([Object.assign({}, prev, { serial: r.serial, model: r.model || prev.model || null,
+                                                resolution: r.resolution || prev.resolution || '',
+                                                density: r.density || prev.density || null })])
+        : rest;
+      clearBusyErr(inst.name);
+      toast(r.online ? '已连接' : '未连接', r.online ? 'ok' : 'err');
+    } catch (e) {
+      toast('刷新失败：' + e.message, 'err');
+    } finally {
+      clearBusy(inst.name);
+      await loadInstances().catch(() => {});
+      render();
+    }
+  }
+
   function accountCard(inst) {
     // 紧凑两行：第一行是谁（昵称/区服）+ 两个动作，第二行在哪（模拟器 ID/分辨率/在跑什么）。
     // 「编排表」归编排页管，卡片上不再重复；「测试连接」由刷新设备覆盖，也不再占位。
@@ -548,6 +597,7 @@
       server ? el('span', { class: 'acct-server', text: server }) : null,
       el('div', { class: 'grow' }),
       el('div', { class: 'acct-actions' },
+        btn('刷新状态', 'refresh', () => refreshAccountStatus(inst), 'ghost', 'sm'),
         btn('编辑资料', 'sliders', () => openProfileDrawer(inst), 'ghost', 'sm'),
         btn('解绑', 'trash', () => removeInstance(inst.name), 'danger', 'sm'),
       ),
@@ -1003,7 +1053,7 @@
     ));
     head.appendChild(el('div', { class: 'fl-bind' },
       el('span', { class: 'small muted', text: '绑定账号' }),
-      flow.accounts.map((acct) => el('span', { class: 'badge badge-accent', text: instName(acct) })),
+      flow.accounts.map((acct) => el('span', { class: 'badge badge-accent', text: acctLabel(instOf(acct)) || acct })),
     ));
     detail.appendChild(head);
 
@@ -1157,13 +1207,17 @@
     let members = (saved.members || flow.accounts.filter((a) => a !== leader)).slice();
 
     const body = el('div');
+    const teamLabel = (acct) => {
+      const one = instOf(acct);
+      return one ? acctLabel(one) : acct;
+    };
     const leaderBox = el('div', { class: 'chips' });
     const memberBox = el('div', { class: 'chips' });
     function paint() {
       leaderBox.innerHTML = '';
       memberBox.innerHTML = '';
       flow.accounts.forEach((acct) => {
-        const chip = el('button', { class: 'chip' + (leader === acct ? ' active' : ''), text: instName(acct) });
+        const chip = el('button', { class: 'chip' + (leader === acct ? ' active' : ''), text: teamLabel(acct) });
         chip.addEventListener('click', () => {
           leader = acct;
           members = members.filter((m) => m !== acct);
@@ -1173,7 +1227,7 @@
       });
       flow.accounts.filter((a) => a !== leader).forEach((acct) => {
         const on = members.includes(acct);
-        const chip = el('button', { class: 'chip' + (on ? ' active' : ''), text: instName(acct) });
+        const chip = el('button', { class: 'chip' + (on ? ' active' : ''), text: teamLabel(acct) });
         chip.addEventListener('click', () => {
           members = on ? members.filter((m) => m !== acct) : members.concat(acct);
           paint();
@@ -1181,7 +1235,7 @@
         memberBox.appendChild(chip);
       });
       hint.textContent = members.length
-        ? `队长：${instName(leader)} · 队员：${members.map(instName).join('、')}（共 ${members.length + 1} 人）`
+        ? `队长：${teamLabel(leader)} · 队员：${members.map(teamLabel).join('、')}（共 ${members.length + 1} 人）`
         : '请至少选择 1 名队员。';
     }
     const hint = el('p', { class: 'hint' });
@@ -2301,7 +2355,7 @@
       chips.innerHTML = '';
       ordered.forEach((inst) => {
         const on = accounts.includes(inst.name);
-        const chip = el('button', { class: 'chip' + (on ? ' active' : ''), text: inst.nickname || inst.name });
+        const chip = el('button', { class: 'chip' + (on ? ' active' : ''), text: acctLabel(inst) });
         chip.addEventListener('click', () => {
           if (on) accounts = accounts.filter((a) => a !== inst.name);
           else accounts = accounts.concat(inst.name);
@@ -2380,7 +2434,7 @@
       chips.innerHTML = '';
       ordered.forEach((inst) => {
         const on = accounts.includes(inst.name);
-        const chip = el('button', { class: 'chip' + (on ? ' active' : ''), text: inst.nickname || inst.name });
+        const chip = el('button', { class: 'chip' + (on ? ' active' : ''), text: acctLabel(inst) });
         chip.addEventListener('click', () => {
           if (on) accounts = accounts.filter((a) => a !== inst.name);
           else accounts = accounts.concat(inst.name);
